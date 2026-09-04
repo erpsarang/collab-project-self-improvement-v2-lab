@@ -6,7 +6,7 @@
   "scripts": {
     "build": "tsc",
     "start": "npm run build --silent && node dist/server.js",
-    "test": "npm run build --silent && node --test dist/**/*.test.js",
+    "test": "npm run build --silent && node scripts/run-tests.js",
     "typecheck": "tsc --noEmit"
   },
   "devDependencies": {
