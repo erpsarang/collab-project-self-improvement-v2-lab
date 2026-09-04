@@ -4,7 +4,9 @@ import { getHealthStatus } from "../service/health-service.js";
 
 export function createHttpServer(): Server {
   return createServer((request, response) => {
-    if (request.method === "GET" && request.url === "/health") {
+    const pathname = new URL(request.url ?? "/", "http://localhost").pathname;
+
+    if (request.method === "GET" && pathname === "/health") {
       response.writeHead(200, { "content-type": "application/json; charset=utf-8" });
       response.end(JSON.stringify(getHealthStatus()));
       return;

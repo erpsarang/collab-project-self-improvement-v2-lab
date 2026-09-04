@@ -30,6 +30,15 @@ test("GET /health returns the service status", async () => {
   assert.deepEqual(await response.json(), { status: "ok" });
 });
 
+test("GET /health with a query string returns the service status", async () => {
+  const baseUrl = await startServer();
+  const response = await fetch(`${baseUrl}/health?source=monitor`);
+
+  assert.equal(response.status, 200);
+  assert.match(response.headers.get("content-type") ?? "", /^application\/json/);
+  assert.deepEqual(await response.json(), { status: "ok" });
+});
+
 test("unknown routes return 404", async () => {
   const baseUrl = await startServer();
   const response = await fetch(`${baseUrl}/unknown`);

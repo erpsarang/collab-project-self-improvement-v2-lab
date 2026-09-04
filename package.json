@@ -5,8 +5,9 @@
   "description": "Self-Improvement V2 experiments",
   "scripts": {
     "build": "tsc",
+    "clean": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\"",
     "start": "npm run build --silent && node dist/server.js",
-    "test": "npm run build --silent && node scripts/run-tests.js",
+    "test": "npm run clean --silent && npm run build --silent && node scripts/run-tests.js",
     "typecheck": "tsc --noEmit"
   },
   "devDependencies": {
