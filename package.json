@@ -1,0 +1,19 @@
+{
+  "name": "collab-project-self-improvement-v2-lab",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Self-Improvement V2 experiments",
+  "scripts": {
+    "build": "tsc",
+    "start": "npm run build --silent && node dist/server.js",
+    "test": "npm run build --silent && node --test dist/**/*.test.js",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "typescript": "^5.7.2"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
