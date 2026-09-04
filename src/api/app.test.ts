@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createConnection } from "node:net";
 import { afterEach, test } from "node:test";
 
 import { createHttpServer } from "./app.js";
@@ -37,6 +38,31 @@ test("GET /health with a query string returns the service status", async () => {
   assert.equal(response.status, 200);
   assert.match(response.headers.get("content-type") ?? "", /^application\/json/);
   assert.deepEqual(await response.json(), { status: "ok" });
+});
+
+test("malformed request targets return 400 without stopping the server", async () => {
+  const baseUrl = await startServer();
+  const { hostname, port } = new URL(baseUrl);
+  const rawResponse = await new Promise<string>((resolve, reject) => {
+    const socket = createConnection({ host: hostname, port: Number(port) });
+    let data = "";
+
+    socket.setEncoding("utf8");
+    socket.on("connect", () => {
+      socket.end("GET http://[ HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n");
+    });
+    socket.on("data", (chunk) => {
+      data += chunk;
+    });
+    socket.on("end", () => resolve(data));
+    socket.on("error", reject);
+  });
+
+  assert.match(rawResponse, /^HTTP\/1\.1 400 Bad Request\r\n/);
+
+  const healthResponse = await fetch(`${baseUrl}/health`);
+  assert.equal(healthResponse.status, 200);
+  assert.deepEqual(await healthResponse.json(), { status: "ok" });
 });
 
 test("unknown routes return 404", async () => {
