@@ -59,14 +59,23 @@ VERIFY
   ↓
 PUBLISH
   ↓
+VERIFY(published HEAD)
+  ↓
 SEMANTIC_REVIEW
   ├─ PASS → MERGE_READY
-  └─ FINDING → FIX → VERIFY → PUBLISH → SEMANTIC_REVIEW
+  └─ FINDING → FIX → VERIFY → PUBLISH → VERIFY(published HEAD) → SEMANTIC_REVIEW
 ```
 
 `AutonomousRunService`는 실행 환경과 분리된 GRAPH 엔진입니다. 실제 Codex 실행, 테스트, GitHub publish,
 Semantic Review 같은 외부 동작은 `AutonomousRunActions`로 주입합니다. Fix Loop는
 `MAX_FIX_ATTEMPTS = 2`로 제한되며, 성공하지 못한 Run은 반드시 `STOPPED(reason)`으로 끝납니다.
+
+`PUBLISH`가 반환한 `publishedHeadSha`는 Semantic Review 전에 반드시 다시 verification 대상이 됩니다.
+따라서 task-local에서 검증한 artifact와 실제 GitHub published artifact가 달라질 경우에도,
+검증되지 않은 published HEAD가 `MERGE_READY`로 진행할 수 없습니다.
+
+Trusted 영역은 `test/`, `tests/`, `.github/`뿐 아니라 이 저장소의 co-located test 규칙인
+`src/**/*.test.*`, `src/**/*.spec.*`도 포함합니다. 자동 Fix가 이 영역을 변경하면 Run은 즉시 중단됩니다.
 
 주요 Stop Policy는 verification 실행 불가, 반복 finding, no-op fix, trusted 영역 변경,
 published HEAD와 review SHA 불일치, fix budget 소진, 자동화 예외입니다.
