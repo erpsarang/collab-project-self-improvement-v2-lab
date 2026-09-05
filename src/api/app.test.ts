@@ -40,6 +40,44 @@ test("GET /health with a query string returns the service status", async () => {
   assert.deepEqual(await response.json(), { status: "ok" });
 });
 
+test("POST /projects creates a project that GET /projects/:id returns", async () => {
+  const baseUrl = await startServer();
+  const createResponse = await fetch(`${baseUrl}/projects`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ name: "First project" }),
+  });
+
+  assert.equal(createResponse.status, 201);
+  const created = await createResponse.json() as { id: string; name: string };
+  assert.match(created.id, /^[0-9a-f-]{36}$/);
+  assert.equal(created.name, "First project");
+
+  const getResponse = await fetch(`${baseUrl}/projects/${created.id}`);
+  assert.equal(getResponse.status, 200);
+  assert.deepEqual(await getResponse.json(), created);
+});
+
+test("GET /projects/:id returns a clear 404 for a missing project", async () => {
+  const baseUrl = await startServer();
+  const response = await fetch(`${baseUrl}/projects/missing`);
+
+  assert.equal(response.status, 404);
+  assert.deepEqual(await response.json(), { error: "Project not found" });
+});
+
+test("POST /projects rejects an invalid project name", async () => {
+  const baseUrl = await startServer();
+  const response = await fetch(`${baseUrl}/projects`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ name: " " }),
+  });
+
+  assert.equal(response.status, 400);
+  assert.deepEqual(await response.json(), { error: "Project name is required" });
+});
+
 test("malformed request targets return 400 without stopping the server", async () => {
   const baseUrl = await startServer();
   const { hostname, port } = new URL(baseUrl);
