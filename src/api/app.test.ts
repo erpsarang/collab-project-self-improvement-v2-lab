@@ -59,6 +59,46 @@ test("GET /health with a query string returns the service status", async () => {
   assert.deepEqual(await response.json(), { status: "ok" });
 });
 
+test("GET /health remains responsive while a project save is pending", async () => {
+  let releaseSave!: () => void;
+  let markSaveStarted!: () => void;
+  const saveStarted = new Promise<void>((resolve) => {
+    markSaveStarted = resolve;
+  });
+  const saveGate = new Promise<void>((resolve) => {
+    releaseSave = resolve;
+  });
+  const repository: ProjectRepository = {
+    async save() {
+      markSaveStarted();
+      await saveGate;
+    },
+    async findById() {
+      return undefined;
+    },
+  };
+  const baseUrl = await startServer(repository);
+  const createPromise = fetch(`${baseUrl}/projects`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ name: "Slow project" }),
+  });
+  await saveStarted;
+
+  const healthResponse = await Promise.race([
+    fetch(`${baseUrl}/health`),
+    new Promise<never>((_, reject) => setTimeout(
+      () => reject(new Error("health request was blocked by project save")),
+      250,
+    )),
+  ]);
+
+  assert.equal(healthResponse.status, 200);
+  assert.deepEqual(await healthResponse.json(), { status: "ok" });
+  releaseSave();
+  assert.equal((await createPromise).status, 201);
+});
+
 test("POST /projects creates a project that GET /projects/:id returns", async () => {
   const baseUrl = await startServer();
   const createResponse = await fetch(`${baseUrl}/projects`, {
