@@ -6,14 +6,18 @@ import { Project } from "../domain/project.js";
 import type { ProjectRepository } from "./project-repository.js";
 
 type ProjectRow = {
-  id: string;
-  name: string;
+  idHex: string;
+  nameHex: string;
 };
 
-const sqliteOutputBufferBytes = 2 * 1024 * 1024;
+const sqliteOutputBufferBytes = 4 * 1024 * 1024;
 
 function sqlText(value: string): string {
   return `CAST(X'${Buffer.from(value, "utf8").toString("hex")}' AS TEXT)`;
+}
+
+function decodeHexText(value: string): string {
+  return Buffer.from(value, "hex").toString("utf8");
 }
 
 export class SQLiteProjectRepository implements ProjectRepository {
@@ -37,13 +41,15 @@ export class SQLiteProjectRepository implements ProjectRepository {
 
   findById(id: string): Project | undefined {
     const output = this.execute(
-      `SELECT id, name FROM projects WHERE id = ${sqlText(id)} LIMIT 1;`,
+      `SELECT hex(id) AS idHex, hex(name) AS nameHex FROM projects WHERE id = ${sqlText(id)} LIMIT 1;`,
       true,
     );
     const rows = output.trim() === "" ? [] : JSON.parse(output) as ProjectRow[];
     const row = rows[0];
 
-    return row ? new Project(row.id, row.name) : undefined;
+    return row
+      ? new Project(decodeHexText(row.idHex), decodeHexText(row.nameHex))
+      : undefined;
   }
 
   private execute(sql: string, json = false): string {
