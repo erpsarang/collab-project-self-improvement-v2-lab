@@ -17,8 +17,8 @@ curl http://localhost:3000/health
 # {"status":"ok"}
 ```
 
-Project는 서버가 식별자를 생성하며 SQLite의 `data/projects.sqlite`에 저장됩니다. 저장 경로는
-`PROJECT_DB_PATH` 환경 변수로 변경할 수 있고, 서버를 재시작해도 Project를 다시 조회할 수 있습니다.
+Project와 그 하위 Task는 SQLite의 `data/projects.sqlite`에 저장됩니다. 저장 경로는
+`PROJECT_DB_PATH` 환경 변수로 변경할 수 있고, 서버를 재시작해도 Project와 Task를 다시 조회할 수 있습니다.
 
 V2-0에서는 `PROJECT_DB_PATH`에 plain filesystem path만 지원합니다. 예를 들어
 `data/projects.sqlite`, `./data/projects.sqlite`, `/var/lib/app/projects.sqlite`, `-projects.sqlite`는 지원합니다.
@@ -33,8 +33,18 @@ curl -X POST http://localhost:3000/projects \
   -d '{"name":"첫 프로젝트"}'
 # {"id":"...","name":"첫 프로젝트"}
 
-curl http://localhost:3000/projects/<id>
+curl http://localhost:3000/projects/<projectId>
+
+curl -X POST http://localhost:3000/projects/<projectId>/tasks \
+  -H 'content-type: application/json' \
+  -d '{"title":"첫 번째 작업"}'
+# {"id":"...","projectId":"...","title":"첫 번째 작업","status":"TODO"}
+
+curl http://localhost:3000/projects/<projectId>/tasks
 ```
+
+Task는 `id`, `projectId`, `title`, `status`를 가지며 새 Task의 기본 `status`는 `TODO`입니다.
+존재하지 않는 Project에는 Task를 생성하거나 조회할 수 없습니다.
 
 ## 검증
 
@@ -46,6 +56,6 @@ npm run typecheck
 ## 구조
 
 - `src/api`: HTTP 요청과 응답 처리
-- `src/service`: 애플리케이션 동작 조율
-- `src/repository`: 데이터 저장소 접근 경계와 SQLite 기반 Project 저장소
-- `src/domain`: 도메인 타입과 규칙
+- `src/service`: Project/Task 애플리케이션 동작과 business rule 조율
+- `src/repository`: 데이터 저장소 접근 경계와 SQLite 기반 Project/Task 저장소
+- `src/domain`: Project/Task 도메인 타입과 규칙
