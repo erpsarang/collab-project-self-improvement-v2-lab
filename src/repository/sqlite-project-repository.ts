@@ -12,6 +12,8 @@ type ProjectRow = {
 
 const sqliteOutputBufferBytes = 4 * 1024 * 1024;
 const sqliteBusyTimeoutMs = 5000;
+const transientSQLitePathError =
+  "PROJECT_DB_PATH must use a file-backed SQLite database; connection-scoped SQLite paths are not supported";
 
 function sqlText(value: string): string {
   return `CAST(X'${Buffer.from(value, "utf8").toString("hex")}' AS TEXT)`;
@@ -21,12 +23,44 @@ function decodeHexText(value: string): string {
   return Buffer.from(value, "hex").toString("utf8");
 }
 
+function decodedPath(value: string): string {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return value;
+  }
+}
+
+function isConnectionScopedSQLitePath(databasePath: string): boolean {
+  if (databasePath === "" || databasePath === ":memory:") {
+    return true;
+  }
+
+  const normalized = decodedPath(databasePath).toLowerCase();
+  if (!normalized.startsWith("file:")) {
+    return false;
+  }
+
+  const withoutFragment = normalized.split("#", 1)[0];
+  if (withoutFragment.startsWith("file::memory:")) {
+    return true;
+  }
+
+  const queryIndex = withoutFragment.indexOf("?");
+  if (queryIndex === -1) {
+    return false;
+  }
+
+  const query = new URLSearchParams(withoutFragment.slice(queryIndex + 1));
+  return query.get("mode")?.toLowerCase() === "memory";
+}
+
 export class SQLiteProjectRepository implements ProjectRepository {
   private readonly ready: Promise<void>;
 
   constructor(private readonly databasePath: string) {
-    if (databasePath === ":memory:") {
-      throw new Error("PROJECT_DB_PATH=:memory: is not supported; use a file-backed SQLite path");
+    if (isConnectionScopedSQLitePath(databasePath)) {
+      throw new Error(transientSQLitePathError);
     }
 
     mkdirSync(dirname(databasePath), { recursive: true });
