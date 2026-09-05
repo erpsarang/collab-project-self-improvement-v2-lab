@@ -55,6 +55,17 @@ test("SQLite repository persists project names too large for a process argument"
   assert.deepEqual(repository.findById(project.id), project);
 });
 
+test("SQLite repository preserves accepted control characters across reads", () => {
+  const directory = mkdtempSync(join(tmpdir(), "projects-sqlite-"));
+  temporaryDirectories.push(directory);
+  const repository = new SQLiteProjectRepository(join(directory, "projects.sqlite"));
+  const project = new Project("control-project", "a\u0001b\u001Fc");
+
+  repository.save(project);
+
+  assert.deepEqual(repository.findById(project.id), project);
+});
+
 test("SQLite repository accepts a relative database path beginning with a hyphen", () => {
   const databasePath = `-projects-${process.pid}.sqlite`;
   temporaryDatabaseFiles.push(databasePath);
