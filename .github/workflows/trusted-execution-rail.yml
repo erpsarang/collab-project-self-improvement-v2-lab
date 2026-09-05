@@ -104,7 +104,6 @@ jobs:
       S0: ${{ needs.iteration_0.outputs.status }}
       S1: ${{ needs.iteration_1.outputs.status }}
       S2: ${{ needs.iteration_2.outputs.status }}
-    shell: bash
     steps:
       - name: Resolve bounded terminal state
         run: |
