@@ -21,41 +21,25 @@ afterEach(() => {
   }
 });
 
-test("SQLite repository rejects connection-scoped database paths immediately", () => {
-  const transientPaths = [
+test("SQLite repository rejects non-plain database paths immediately", () => {
+  const unsupportedPaths = [
     "",
     ":memory:",
+    "file:projects.sqlite",
+    "file:nested/projects.sqlite?mode=rwc",
     "file::memory:",
-    "file::memory:?cache=shared",
-    "file::memory:#fragment",
-    "file:%3Amemory%3A?cache=shared",
-    "file:memdb?mode=memory&cache=shared",
-    "file:memdb?cache=shared&mode=memory",
-    "file:memdb?mode=MEMORY#fragment",
-    "file:memdb?mode%3Dmemory",
-    "file:memdb?mode=ro&mode=memory",
+    "file:memdb?mode=memory",
+    "file:foo%3Fbar?mode=memory",
+    "FILE:projects.sqlite",
   ];
 
-  for (const databasePath of transientPaths) {
+  for (const databasePath of unsupportedPaths) {
     assert.throws(
       () => new SQLiteProjectRepository(databasePath),
-      /file-backed SQLite database; connection-scoped SQLite paths are not supported/,
+      /plain filesystem path; SQLite file: URIs and connection-scoped paths are not supported/,
       databasePath,
     );
   }
-});
-
-test("SQLite repository prepares the parent directory for a file-backed SQLite URI", async () => {
-  const directory = mkdtempSync(join(tmpdir(), "projects-sqlite-uri-"));
-  temporaryDirectories.push(directory);
-  const databaseFile = join(directory, "nested", "projects.sqlite");
-  const databasePath = `file:${databaseFile}?mode=rwc`;
-  const repository = new SQLiteProjectRepository(databasePath);
-  const project = new Project("uri-project", "URI-backed project");
-
-  await repository.save(project);
-
-  assert.deepEqual(await repository.findById(project.id), project);
 });
 
 test("projects remain available after the SQLite repository is recreated", async () => {
