@@ -1,8 +1,10 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 
 import type { ProjectRepository } from "../repository/project-repository.js";
+import { InMemoryTaskRepository, type TaskRepository } from "../repository/task-repository.js";
 import { getHealthStatus } from "../service/health-service.js";
 import { ProjectNotFoundError, ProjectService } from "../service/project-service.js";
+import { TaskService } from "../service/task-service.js";
 
 const jsonHeaders = { "content-type": "application/json; charset=utf-8" };
 const maxRequestBodyBytes = 1024 * 1024;
@@ -86,11 +88,22 @@ function readJsonBody(request: IncomingMessage): Promise<unknown> {
   });
 }
 
-export function createHttpServer(projectRepository: ProjectRepository): Server {
+function isValidText(value: unknown): value is string {
+  return typeof value === "string"
+    && value.trim() !== ""
+    && !value.includes("\0")
+    && !hasUnpairedSurrogate(value);
+}
+
+export function createHttpServer(
+  projectRepository: ProjectRepository,
+  taskRepository: TaskRepository = new InMemoryTaskRepository(),
+): Server {
   const projectService = new ProjectService(projectRepository);
+  const taskService = new TaskService(projectRepository, taskRepository);
 
   return createServer((request, response) => {
-    void handleRequest(request, response, projectService).catch(() => {
+    void handleRequest(request, response, projectService, taskService).catch(() => {
       if (!response.headersSent) {
         sendJson(response, 500, { error: "Internal Server Error" });
       } else {
@@ -104,6 +117,7 @@ async function handleRequest(
   request: IncomingMessage,
   response: ServerResponse,
   projectService: ProjectService,
+  taskService: TaskService,
 ): Promise<void> {
   let pathname: string;
 
@@ -138,10 +152,7 @@ async function handleRequest(
       typeof body !== "object"
       || body === null
       || !("name" in body)
-      || typeof body.name !== "string"
-      || body.name.trim() === ""
-      || body.name.includes("\0")
-      || hasUnpairedSurrogate(body.name)
+      || !isValidText(body.name)
     ) {
       sendJson(response, 400, { error: "Project name is required" });
       return;
@@ -150,6 +161,66 @@ async function handleRequest(
     const project = await projectService.create(body.name.trim());
     sendJson(response, 201, project);
     return;
+  }
+
+  const taskCollectionMatch = pathname.match(/^\/projects\/([^/]+)\/tasks$/);
+  if (taskCollectionMatch) {
+    let projectId: string;
+    try {
+      projectId = decodeURIComponent(taskCollectionMatch[1]);
+    } catch {
+      sendJson(response, 400, { error: "Bad Request" });
+      return;
+    }
+
+    if (request.method === "POST") {
+      let body: unknown;
+      try {
+        body = await readJsonBody(request);
+      } catch (error) {
+        if (error instanceof RequestBodyTooLargeError) {
+          sendJson(response, 413, { error: "Request body too large" });
+          return;
+        }
+        sendJson(response, 400, { error: "Request body must be valid JSON" });
+        return;
+      }
+
+      if (
+        typeof body !== "object"
+        || body === null
+        || !("title" in body)
+        || !isValidText(body.title)
+      ) {
+        sendJson(response, 400, { error: "Task title is required" });
+        return;
+      }
+
+      try {
+        const task = await taskService.create(projectId, body.title.trim());
+        sendJson(response, 201, task);
+      } catch (error) {
+        if (error instanceof ProjectNotFoundError) {
+          sendJson(response, 404, { error: "Project not found" });
+          return;
+        }
+        throw error;
+      }
+      return;
+    }
+
+    if (request.method === "GET") {
+      try {
+        sendJson(response, 200, await taskService.listByProject(projectId));
+      } catch (error) {
+        if (error instanceof ProjectNotFoundError) {
+          sendJson(response, 404, { error: "Project not found" });
+          return;
+        }
+        throw error;
+      }
+      return;
+    }
   }
 
   const projectMatch = pathname.match(/^\/projects\/([^/]+)$/);
