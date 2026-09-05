@@ -147,7 +147,7 @@ async function handleRequest(
       return;
     }
 
-    const project = projectService.create(body.name.trim());
+    const project = await projectService.create(body.name.trim());
     sendJson(response, 201, project);
     return;
   }
@@ -155,7 +155,7 @@ async function handleRequest(
   const projectMatch = pathname.match(/^\/projects\/([^/]+)$/);
   if (request.method === "GET" && projectMatch) {
     try {
-      const project = projectService.getById(decodeURIComponent(projectMatch[1]));
+      const project = await projectService.getById(decodeURIComponent(projectMatch[1]));
       sendJson(response, 200, project);
     } catch (error) {
       if (error instanceof ProjectNotFoundError) {
