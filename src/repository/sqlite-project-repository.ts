@@ -52,7 +52,23 @@ function isConnectionScopedSQLitePath(databasePath: string): boolean {
   }
 
   const query = new URLSearchParams(withoutFragment.slice(queryIndex + 1));
-  return query.get("mode")?.toLowerCase() === "memory";
+  const modes = query.getAll("mode");
+  return modes.at(-1)?.toLowerCase() === "memory";
+}
+
+function sqliteDatabaseFilePath(databasePath: string): string {
+  const decoded = decodedPath(databasePath);
+  if (!decoded.toLowerCase().startsWith("file:")) {
+    return databasePath;
+  }
+
+  const withoutFragment = decoded.split("#", 1)[0];
+  const queryIndex = withoutFragment.indexOf("?");
+  const uriPath = queryIndex === -1
+    ? withoutFragment
+    : withoutFragment.slice(0, queryIndex);
+
+  return uriPath.slice("file:".length);
 }
 
 export class SQLiteProjectRepository implements ProjectRepository {
@@ -63,7 +79,7 @@ export class SQLiteProjectRepository implements ProjectRepository {
       throw new Error(transientSQLitePathError);
     }
 
-    mkdirSync(dirname(databasePath), { recursive: true });
+    mkdirSync(dirname(sqliteDatabaseFilePath(databasePath)), { recursive: true });
     this.ready = this.execute(`
       CREATE TABLE IF NOT EXISTS projects (
         id TEXT PRIMARY KEY,
