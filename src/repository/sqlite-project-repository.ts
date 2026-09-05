@@ -1,4 +1,4 @@
-import { execFileSync } from "node:child_process";
+import { spawn } from "node:child_process";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 
@@ -11,6 +11,7 @@ type ProjectRow = {
 };
 
 const sqliteOutputBufferBytes = 4 * 1024 * 1024;
+const sqliteBusyTimeoutMs = 5000;
 
 function sqlText(value: string): string {
   return `CAST(X'${Buffer.from(value, "utf8").toString("hex")}' AS TEXT)`;
@@ -21,26 +22,30 @@ function decodeHexText(value: string): string {
 }
 
 export class SQLiteProjectRepository implements ProjectRepository {
+  private readonly ready: Promise<void>;
+
   constructor(private readonly databasePath: string) {
     mkdirSync(dirname(databasePath), { recursive: true });
-    this.execute(`
+    this.ready = this.execute(`
       CREATE TABLE IF NOT EXISTS projects (
         id TEXT PRIMARY KEY,
         name TEXT NOT NULL
       );
-    `);
+    `).then(() => undefined);
   }
 
-  save(project: Project): void {
-    this.execute(`
+  async save(project: Project): Promise<void> {
+    await this.ready;
+    await this.execute(`
       INSERT INTO projects (id, name)
       VALUES (${sqlText(project.id)}, ${sqlText(project.name)})
       ON CONFLICT(id) DO UPDATE SET name = excluded.name;
     `);
   }
 
-  findById(id: string): Project | undefined {
-    const output = this.execute(
+  async findById(id: string): Promise<Project | undefined> {
+    await this.ready;
+    const output = await this.execute(
       `SELECT hex(id) AS idHex, hex(name) AS nameHex FROM projects WHERE id = ${sqlText(id)} LIMIT 1;`,
       true,
     );
@@ -52,15 +57,54 @@ export class SQLiteProjectRepository implements ProjectRepository {
       : undefined;
   }
 
-  private execute(sql: string, json = false): string {
-    return execFileSync(
-      "sqlite3",
-      ["-batch", ...(json ? ["-json"] : []), "--", this.databasePath],
-      {
-        encoding: "utf8",
-        input: sql,
-        maxBuffer: sqliteOutputBufferBytes,
-      },
-    );
+  private execute(sql: string, json = false): Promise<string> {
+    return new Promise((resolve, reject) => {
+      const child = spawn(
+        "sqlite3",
+        ["-batch", ...(json ? ["-json"] : []), "--", this.databasePath],
+        { stdio: ["pipe", "pipe", "pipe"] },
+      );
+      const stdoutChunks: Buffer[] = [];
+      const stderrChunks: Buffer[] = [];
+      let stdoutBytes = 0;
+      let settled = false;
+
+      const fail = (error: Error): void => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        child.kill();
+        reject(error);
+      };
+
+      child.stdout.on("data", (chunk: Buffer) => {
+        stdoutBytes += chunk.length;
+        if (stdoutBytes > sqliteOutputBufferBytes) {
+          fail(new Error("sqlite3 output exceeded buffer limit"));
+          return;
+        }
+        stdoutChunks.push(chunk);
+      });
+      child.stderr.on("data", (chunk: Buffer) => {
+        stderrChunks.push(chunk);
+      });
+      child.on("error", fail);
+      child.stdin.on("error", fail);
+      child.on("close", (code) => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        if (code !== 0) {
+          const stderr = Buffer.concat(stderrChunks).toString("utf8").trim();
+          reject(new Error(stderr || `sqlite3 exited with code ${code ?? "unknown"}`));
+          return;
+        }
+        resolve(Buffer.concat(stdoutChunks).toString("utf8"));
+      });
+
+      child.stdin.end(`.timeout ${sqliteBusyTimeoutMs}\n${sql}`);
+    });
   }
 }
