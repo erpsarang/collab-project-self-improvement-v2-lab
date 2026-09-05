@@ -33,6 +33,7 @@ test("SQLite repository rejects connection-scoped database paths immediately", (
     "file:memdb?cache=shared&mode=memory",
     "file:memdb?mode=MEMORY#fragment",
     "file:memdb?mode%3Dmemory",
+    "file:memdb?mode=ro&mode=memory",
   ];
 
   for (const databasePath of transientPaths) {
@@ -42,6 +43,19 @@ test("SQLite repository rejects connection-scoped database paths immediately", (
       databasePath,
     );
   }
+});
+
+test("SQLite repository prepares the parent directory for a file-backed SQLite URI", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "projects-sqlite-uri-"));
+  temporaryDirectories.push(directory);
+  const databaseFile = join(directory, "nested", "projects.sqlite");
+  const databasePath = `file:${databaseFile}?mode=rwc`;
+  const repository = new SQLiteProjectRepository(databasePath);
+  const project = new Project("uri-project", "URI-backed project");
+
+  await repository.save(project);
+
+  assert.deepEqual(await repository.findById(project.id), project);
 });
 
 test("projects remain available after the SQLite repository is recreated", async () => {
