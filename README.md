@@ -20,8 +20,9 @@ curl http://localhost:3000/health
 Project는 서버가 식별자를 생성하며 SQLite의 `data/projects.sqlite`에 저장됩니다. 저장 경로는
 `PROJECT_DB_PATH` 환경 변수로 변경할 수 있고, 서버를 재시작해도 Project를 다시 조회할 수 있습니다.
 
-현재 구현은 file-backed SQLite만 지원하며 `PROJECT_DB_PATH=:memory:`는 지원하지 않습니다.
-해당 값을 사용하면 서버 시작 시 명확한 설정 오류로 즉시 종료됩니다.
+현재 구현은 file-backed SQLite만 지원합니다. 빈 경로, `:memory:`, `file::memory:` 계열,
+`mode=memory`를 사용하는 `file:` URI처럼 connection-scoped로 동작하는 SQLite 경로는 지원하지 않습니다.
+이러한 값을 사용하면 서버 시작 시 명확한 설정 오류로 즉시 종료됩니다.
 
 ```bash
 curl -X POST http://localhost:3000/projects \
