@@ -118,6 +118,7 @@ async function handleRequest(
       || !("name" in body)
       || typeof body.name !== "string"
       || body.name.trim() === ""
+      || body.name.includes("\0")
     ) {
       sendJson(response, 400, { error: "Project name is required" });
       return;

@@ -38,3 +38,14 @@ test("SQLite repository preserves project text without interpreting it as SQL", 
 
   assert.deepEqual(repository.findById(project.id), project);
 });
+
+test("SQLite repository persists project names too large for a process argument", () => {
+  const directory = mkdtempSync(join(tmpdir(), "projects-sqlite-"));
+  temporaryDirectories.push(directory);
+  const repository = new SQLiteProjectRepository(join(directory, "projects.sqlite"));
+  const project = new Project("large-project", "x".repeat(128 * 1024));
+
+  repository.save(project);
+
+  assert.deepEqual(repository.findById(project.id), project);
+});

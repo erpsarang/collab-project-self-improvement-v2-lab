@@ -118,6 +118,18 @@ test("POST /projects rejects an invalid project name", async () => {
   assert.deepEqual(await response.json(), { error: "Project name is required" });
 });
 
+test("POST /projects rejects project names containing NUL", async () => {
+  const baseUrl = await startServer();
+  const response = await fetch(`${baseUrl}/projects`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ name: "x\0y" }),
+  });
+
+  assert.equal(response.status, 400);
+  assert.deepEqual(await response.json(), { error: "Project name is required" });
+});
+
 test("POST /projects rejects request bodies larger than 1 MiB", async () => {
   const baseUrl = await startServer();
   const response = await fetch(`${baseUrl}/projects`, {
