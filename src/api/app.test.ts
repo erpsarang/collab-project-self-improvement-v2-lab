@@ -1,25 +1,44 @@
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync } from "node:fs";
 import { createConnection } from "node:net";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterEach, test } from "node:test";
 
+import { InMemoryProjectRepository, type ProjectRepository } from "../repository/project-repository.js";
+import { SQLiteProjectRepository } from "../repository/sqlite-project-repository.js";
 import { createHttpServer } from "./app.js";
 
 const openServers: ReturnType<typeof createHttpServer>[] = [];
+const temporaryDirectories: string[] = [];
 
 afterEach(async () => {
   await Promise.all(openServers.splice(0).map((server) => new Promise<void>((resolve, reject) => {
     server.close((error) => error ? reject(error) : resolve());
   })));
+  for (const directory of temporaryDirectories.splice(0)) {
+    rmSync(directory, { recursive: true, force: true });
+  }
 });
 
-async function startServer(): Promise<string> {
-  const server = createHttpServer();
+async function startServer(
+  repository: ProjectRepository = new InMemoryProjectRepository(),
+): Promise<string> {
+  const server = createHttpServer(repository);
   openServers.push(server);
 
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   const address = server.address();
   assert(address && typeof address !== "string");
   return `http://127.0.0.1:${address.port}`;
+}
+
+async function stopServer(): Promise<void> {
+  const server = openServers.pop();
+  assert(server);
+  await new Promise<void>((resolve, reject) => {
+    server.close((error) => error ? reject(error) : resolve());
+  });
 }
 
 test("GET /health returns the service status", async () => {
@@ -54,6 +73,27 @@ test("POST /projects creates a project that GET /projects/:id returns", async ()
   assert.equal(created.name, "First project");
 
   const getResponse = await fetch(`${baseUrl}/projects/${created.id}`);
+  assert.equal(getResponse.status, 200);
+  assert.deepEqual(await getResponse.json(), created);
+});
+
+test("POSTed projects remain available through the API after a SQLite-backed restart", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "projects-api-sqlite-"));
+  temporaryDirectories.push(directory);
+  const databasePath = join(directory, "projects.sqlite");
+  const firstBaseUrl = await startServer(new SQLiteProjectRepository(databasePath));
+  const createResponse = await fetch(`${firstBaseUrl}/projects`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ name: "Restart-safe project" }),
+  });
+  assert.equal(createResponse.status, 201);
+  const created = await createResponse.json() as { id: string; name: string };
+  await stopServer();
+
+  const restartedBaseUrl = await startServer(new SQLiteProjectRepository(databasePath));
+  const getResponse = await fetch(`${restartedBaseUrl}/projects/${created.id}`);
+
   assert.equal(getResponse.status, 200);
   assert.deepEqual(await getResponse.json(), created);
 });

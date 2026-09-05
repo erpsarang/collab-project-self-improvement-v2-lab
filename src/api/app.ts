@@ -1,6 +1,6 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 
-import { InMemoryProjectRepository } from "../repository/project-repository.js";
+import type { ProjectRepository } from "../repository/project-repository.js";
 import { getHealthStatus } from "../service/health-service.js";
 import { ProjectNotFoundError, ProjectService } from "../service/project-service.js";
 
@@ -64,8 +64,8 @@ function readJsonBody(request: IncomingMessage): Promise<unknown> {
   });
 }
 
-export function createHttpServer(): Server {
-  const projectService = new ProjectService(new InMemoryProjectRepository());
+export function createHttpServer(projectRepository: ProjectRepository): Server {
+  const projectService = new ProjectService(projectRepository);
 
   return createServer((request, response) => {
     void handleRequest(request, response, projectService).catch(() => {
