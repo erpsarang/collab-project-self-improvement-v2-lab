@@ -21,11 +21,27 @@ afterEach(() => {
   }
 });
 
-test("SQLite repository rejects the unsupported in-memory database path immediately", () => {
-  assert.throws(
-    () => new SQLiteProjectRepository(":memory:"),
-    /PROJECT_DB_PATH=:memory: is not supported/,
-  );
+test("SQLite repository rejects connection-scoped database paths immediately", () => {
+  const transientPaths = [
+    "",
+    ":memory:",
+    "file::memory:",
+    "file::memory:?cache=shared",
+    "file::memory:#fragment",
+    "file:%3Amemory%3A?cache=shared",
+    "file:memdb?mode=memory&cache=shared",
+    "file:memdb?cache=shared&mode=memory",
+    "file:memdb?mode=MEMORY#fragment",
+    "file:memdb?mode%3Dmemory",
+  ];
+
+  for (const databasePath of transientPaths) {
+    assert.throws(
+      () => new SQLiteProjectRepository(databasePath),
+      /file-backed SQLite database; connection-scoped SQLite paths are not supported/,
+      databasePath,
+    );
+  }
 });
 
 test("projects remain available after the SQLite repository is recreated", async () => {
