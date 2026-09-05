@@ -47,10 +47,14 @@ export class SQLiteProjectRepository implements ProjectRepository {
   }
 
   private execute(sql: string, json = false): string {
-    return execFileSync("sqlite3", ["-batch", ...(json ? ["-json"] : []), this.databasePath], {
-      encoding: "utf8",
-      input: sql,
-      maxBuffer: sqliteOutputBufferBytes,
-    });
+    return execFileSync(
+      "sqlite3",
+      ["-batch", ...(json ? ["-json"] : []), "--", this.databasePath],
+      {
+        encoding: "utf8",
+        input: sql,
+        maxBuffer: sqliteOutputBufferBytes,
+      },
+    );
   }
 }
