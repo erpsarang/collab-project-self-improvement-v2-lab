@@ -142,6 +142,31 @@ test("POST /projects rejects project names containing an unpaired surrogate", as
   assert.deepEqual(await response.json(), { error: "Project name is required" });
 });
 
+test("POST /projects rejects project names ending with an unpaired high surrogate", async () => {
+  const baseUrl = await startServer();
+  const response = await fetch(`${baseUrl}/projects`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: String.raw`{"name":"a\uD800"}`,
+  });
+
+  assert.equal(response.status, 400);
+  assert.deepEqual(await response.json(), { error: "Project name is required" });
+});
+
+test("POST /projects accepts project names containing a valid surrogate pair", async () => {
+  const baseUrl = await startServer();
+  const response = await fetch(`${baseUrl}/projects`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: String.raw`{"name":"a\uD83D\uDE00"}`,
+  });
+
+  assert.equal(response.status, 201);
+  const created = await response.json() as { id: string; name: string };
+  assert.equal(created.name, "a😀");
+});
+
 test("SQLite-backed projects at the request limit can be retrieved", async () => {
   const directory = mkdtempSync(join(tmpdir(), "projects-api-sqlite-"));
   temporaryDirectories.push(directory);
