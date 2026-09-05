@@ -31,16 +31,23 @@ const makeActions = (overrides: Partial<AutonomousRunActions> = {}): AutonomousR
 const createService = (actions: AutonomousRunActions): AutonomousRunService =>
   new AutonomousRunService(actions, () => "2026-09-06T00:00:00.000Z", () => "run-1");
 
-test("successful run reaches MERGE_READY with provenance", async () => {
-  const result = await createService(makeActions()).run(candidate);
+test("successful run verifies the published HEAD before MERGE_READY", async () => {
+  const verifiedHeads: Array<string | undefined> = [];
+  const result = await createService(makeActions({
+    verify: async (_candidate, publishedHeadSha) => {
+      verifiedHeads.push(publishedHeadSha);
+      return { status: "PASS" };
+    },
+  })).run(candidate);
 
   assert.equal(result.state, "MERGE_READY");
   assert.equal(result.provenance.runId, "run-1");
   assert.equal(result.provenance.candidateIssueNumber, 16);
   assert.equal(result.provenance.baseSha, "base-sha");
   assert.equal(result.provenance.publishedHeadSha, "published-sha");
+  assert.deepEqual(verifiedHeads, [undefined, "published-sha"]);
   assert.deepEqual(result.provenance.history.map((entry) => entry.state), [
-    "PLAN", "IMPLEMENT", "VERIFY", "PUBLISH", "SEMANTIC_REVIEW", "MERGE_READY",
+    "PLAN", "IMPLEMENT", "VERIFY", "PUBLISH", "VERIFY", "SEMANTIC_REVIEW", "MERGE_READY",
   ]);
 });
 
@@ -64,6 +71,7 @@ test("verification failure automatically enters FIX before publish", async () =>
   const verifications: VerificationResult[] = [
     { status: "FAIL", summary: "tests failed" },
     { status: "PASS" },
+    { status: "PASS" },
   ];
   const result = await createService(makeActions({
     verify: async () => verifications.shift()!,
@@ -71,6 +79,34 @@ test("verification failure automatically enters FIX before publish", async () =>
 
   assert.equal(result.state, "MERGE_READY");
   assert.equal(result.provenance.fixAttempt, 1);
+});
+
+test("failed published-artifact verification enters bounded FIX and republishes", async () => {
+  const heads = ["head-1", "head-2"];
+  const publishedVerificationResults: VerificationResult[] = [
+    { status: "FAIL", summary: "published artifact failed" },
+    { status: "PASS" },
+  ];
+  let publishCalls = 0;
+  const result = await createService(makeActions({
+    publish: async () => {
+      publishCalls += 1;
+      return { publishedHeadSha: heads.shift()! };
+    },
+    verify: async (_candidate, publishedHeadSha) => {
+      if (!publishedHeadSha) return { status: "PASS" };
+      return publishedVerificationResults.shift()!;
+    },
+    semanticReview: async (_candidate, publishedHeadSha) => ({
+      status: "PASS",
+      reviewedHeadSha: publishedHeadSha,
+    }),
+  })).run(candidate);
+
+  assert.equal(result.state, "MERGE_READY");
+  assert.equal(result.provenance.fixAttempt, 1);
+  assert.equal(publishCalls, 2);
+  assert.equal(result.provenance.publishedHeadSha, "head-2");
 });
 
 test("unavailable verification stops the run", async () => {
@@ -82,9 +118,31 @@ test("unavailable verification stops the run", async () => {
   assert.equal(result.provenance.stopReason, "VERIFICATION_UNAVAILABLE");
 });
 
+test("unavailable published-artifact verification stops the run", async () => {
+  const result = await createService(makeActions({
+    verify: async (_candidate, publishedHeadSha) =>
+      publishedHeadSha ? { status: "UNAVAILABLE" } : { status: "PASS" },
+  })).run(candidate);
+
+  assert.equal(result.state, "STOPPED");
+  assert.equal(result.provenance.stopReason, "VERIFICATION_UNAVAILABLE");
+});
+
 test("trusted implementation path stops the run", async () => {
   const result = await createService(makeActions({
     implement: async () => ({ changed: true, changedPaths: ["tests/trusted.test.ts"] }),
+  })).run(candidate);
+
+  assert.equal(result.state, "STOPPED");
+  assert.equal(result.provenance.stopReason, "TRUSTED_AREA_CHANGED");
+});
+
+test("co-located src test file is treated as trusted", async () => {
+  const result = await createService(makeActions({
+    implement: async () => ({
+      changed: true,
+      changedPaths: ["src/service/autonomous-run-service.test.ts"],
+    }),
   })).run(candidate);
 
   assert.equal(result.state, "STOPPED");
