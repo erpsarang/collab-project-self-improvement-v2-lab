@@ -9,6 +9,7 @@ export const TRUSTED_PATHS = [
   "scripts/",
   "src/trusted-rail/",
   "docs/trusted-execution-rail.md",
+  "tsconfig.json",
 ] as const;
 
 export function normalizeRepositoryPath(input: string): string {
@@ -29,9 +30,11 @@ export function normalizeRepositoryPath(input: string): string {
 
 export function isTrustedPath(input: string): boolean {
   const path = normalizeRepositoryPath(input);
-  return TRUSTED_PATHS.some((trusted) =>
-    trusted.endsWith("/") ? path.startsWith(trusted) : path === trusted,
-  );
+  return TRUSTED_PATHS.some((trusted) => {
+    if (!trusted.endsWith("/")) return path === trusted;
+    const root = trusted.slice(0, -1);
+    return path === root || path.startsWith(trusted);
+  });
 }
 
 export function normalizeAndValidateChangedPaths(paths: string[]): string[] {

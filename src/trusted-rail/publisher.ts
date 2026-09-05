@@ -20,6 +20,17 @@ interface GitCommit { sha: string; tree: { sha: string } }
 interface GitObject { sha: string }
 interface PullRequest { number: number; head: { ref: string }; base: { ref: string } }
 
+export interface TrustedPublishContext {
+  repository: string;
+  baseBranch: string;
+  rootBaseSha: string;
+  parentSha: string;
+  targetBranch: string;
+  expectedHeadSha: string | null;
+  issueNumber: number;
+  runId: string;
+}
+
 class GitHubApi {
   constructor(
     private readonly repository: string,
@@ -30,38 +41,42 @@ class GitHubApi {
     return `https://api.github.com/repos/${this.repository}${path}`;
   }
 
+  private async rawRequest<T>(method: string, path: string, body?: unknown): Promise<T> {
+    const response = await fetch(this.url(path), {
+      method,
+      headers: {
+        Accept: "application/vnd.github+json",
+        Authorization: `Bearer ${this.token}`,
+        "X-GitHub-Api-Version": "2022-11-28",
+        "Content-Type": "application/json",
+      },
+      body: body === undefined ? undefined : JSON.stringify(body),
+    });
+    if (response.ok) return (await response.json()) as T;
+    const text = await response.text();
+    const error = new Error(`GITHUB_API_${response.status}:${text}`);
+    Object.assign(error, { status: response.status });
+    throw error;
+  }
+
   async request<T>(method: string, path: string, body?: unknown): Promise<T> {
     let lastError: Error | undefined;
     for (let attempt = 0; attempt <= MAX_PUBLISH_RECOVERY_ATTEMPTS; attempt += 1) {
       try {
-        const response = await fetch(this.url(path), {
-          method,
-          headers: {
-            Accept: "application/vnd.github+json",
-            Authorization: `Bearer ${this.token}`,
-            "X-GitHub-Api-Version": "2022-11-28",
-            "Content-Type": "application/json",
-          },
-          body: body === undefined ? undefined : JSON.stringify(body),
-        });
-        if (response.ok) return (await response.json()) as T;
-        const text = await response.text();
-        const retryable = response.status >= 500 || response.status === 429;
-        if (!retryable || attempt === MAX_PUBLISH_RECOVERY_ATTEMPTS) {
-          const error = new Error(`GITHUB_API_${response.status}:${text}`);
-          Object.assign(error, { status: response.status });
-          throw error;
-        }
-        lastError = new Error(`GITHUB_API_${response.status}:${text}`);
+        return await this.rawRequest<T>(method, path, body);
       } catch (error) {
         const e = error instanceof Error ? error : new Error(String(error));
         const status = (e as Error & { status?: number }).status;
-        if (status && status < 500 && status !== 429) throw e;
+        const retryable = status === undefined || status >= 500 || status === 429;
+        if (!retryable || attempt === MAX_PUBLISH_RECOVERY_ATTEMPTS) throw e;
         lastError = e;
-        if (attempt === MAX_PUBLISH_RECOVERY_ATTEMPTS) throw e;
       }
     }
     throw lastError ?? new Error("GITHUB_API_FAILED");
+  }
+
+  async requestOnce<T>(method: string, path: string, body?: unknown): Promise<T> {
+    return this.rawRequest<T>(method, path, body);
   }
 
   async optionalRef(branch: string): Promise<GitRef | null> {
@@ -82,9 +97,33 @@ export interface PublishResult {
   recovered: boolean;
 }
 
+export function assertArtifactProvenance(
+  artifact: RailArtifact,
+  trusted: TrustedPublishContext,
+): void {
+  const comparisons: Array<[string, unknown, unknown]> = [
+    ["repository", artifact.repository, trusted.repository],
+    ["baseBranch", artifact.baseBranch, trusted.baseBranch],
+    ["rootBaseSha", artifact.rootBaseSha, trusted.rootBaseSha],
+    ["parentSha", artifact.parentSha, trusted.parentSha],
+    ["targetBranch", artifact.targetBranch, trusted.targetBranch],
+    ["expectedHeadSha", artifact.expectedHeadSha, trusted.expectedHeadSha],
+    ["issueNumber", artifact.issueNumber, trusted.issueNumber],
+    ["runId", artifact.runId, trusted.runId],
+  ];
+  const mismatch = comparisons.find(([, actual, expected]) => actual !== expected);
+  if (mismatch) {
+    throw new RailStopError(
+      "PROVENANCE_MISMATCH",
+      `Trusted workflow input mismatch for ${mismatch[0]}`,
+    );
+  }
+}
+
 export async function publishArtifact(
   rawArtifact: RailArtifact,
   token: string,
+  trusted: TrustedPublishContext,
 ): Promise<PublishResult> {
   let artifact: RailArtifact;
   try {
@@ -99,30 +138,32 @@ export async function publishArtifact(
     throw new RailStopError(reason, message);
   }
 
-  if (!token) throw new RailStopError("PUBLISH_FAILED", "Missing trusted GitHub token");
-  const api = new GitHubApi(artifact.repository, token);
+  assertArtifactProvenance(artifact, trusted);
 
-  const baseRef = await api.optionalRef(artifact.baseBranch);
-  if (!baseRef || baseRef.object.sha !== artifact.rootBaseSha) {
+  if (!token) throw new RailStopError("PUBLISH_FAILED", "Missing trusted GitHub token");
+  const api = new GitHubApi(trusted.repository, token);
+
+  const baseRef = await api.optionalRef(trusted.baseBranch);
+  if (!baseRef || baseRef.object.sha !== trusted.rootBaseSha) {
     throw new RailStopError("PROVENANCE_MISMATCH", "Base branch moved from approved root SHA");
   }
 
-  const targetRef = await api.optionalRef(artifact.targetBranch);
-  if (artifact.expectedHeadSha === null) {
-    if (targetRef) throw new RailStopError("TARGET_HEAD_MOVED", "Target branch already exists");
-    if (artifact.parentSha !== artifact.rootBaseSha) {
+  const initialTargetRef = await api.optionalRef(trusted.targetBranch);
+  if (trusted.expectedHeadSha === null) {
+    if (initialTargetRef) throw new RailStopError("TARGET_HEAD_MOVED", "Target branch already exists");
+    if (trusted.parentSha !== trusted.rootBaseSha) {
       throw new RailStopError("PROVENANCE_MISMATCH", "Fresh publish parent must equal root base SHA");
     }
   } else {
-    if (!targetRef || targetRef.object.sha !== artifact.expectedHeadSha) {
+    if (!initialTargetRef || initialTargetRef.object.sha !== trusted.expectedHeadSha) {
       throw new RailStopError("TARGET_HEAD_MOVED", "Target branch does not match expected head");
     }
-    if (artifact.parentSha !== artifact.expectedHeadSha) {
+    if (trusted.parentSha !== trusted.expectedHeadSha) {
       throw new RailStopError("PROVENANCE_MISMATCH", "Fix artifact parent must equal expected head");
     }
   }
 
-  const parent = await api.request<GitCommit>("GET", `/git/commits/${artifact.parentSha}`);
+  const parent = await api.request<GitCommit>("GET", `/git/commits/${trusted.parentSha}`);
   const treeEntries: Array<{ path: string; mode: "100644"; type: "blob"; sha: string | null }> = [];
   for (const file of artifact.files) {
     if (file.operation === "delete") {
@@ -141,28 +182,51 @@ export async function publishArtifact(
     tree: treeEntries,
   });
   const commit = await api.request<GitObject>("POST", "/git/commits", {
-    message: `SI #${artifact.issueNumber}: trusted rail publish (${artifact.runId})`,
+    message: `SI #${trusted.issueNumber}: trusted rail publish (${trusted.runId})`,
     tree: tree.sha,
-    parents: [artifact.parentSha],
+    parents: [trusted.parentSha],
   });
 
-  if (targetRef) {
-    await api.request<GitRef>("PATCH", `/git/refs/heads/${encodeURIComponent(artifact.targetBranch)}`, {
-      sha: commit.sha,
-      force: false,
-    });
-  } else {
-    await api.request<GitRef>("POST", "/git/refs", {
-      ref: `refs/heads/${artifact.targetBranch}`,
-      sha: commit.sha,
-    });
+  // GitHub REST ref updates do not accept an expected-old-SHA CAS value. Re-read
+  // immediately before the one-shot mutation, serialize same-target runs at the
+  // workflow level, never retry the ref mutation, and verify the exact new HEAD.
+  const preUpdateRef = await api.optionalRef(trusted.targetBranch);
+  if (trusted.expectedHeadSha === null) {
+    if (preUpdateRef) throw new RailStopError("TARGET_HEAD_MOVED", "Target branch appeared before publish");
+  } else if (!preUpdateRef || preUpdateRef.object.sha !== trusted.expectedHeadSha) {
+    throw new RailStopError("TARGET_HEAD_MOVED", "Target branch moved before publish");
   }
 
-  const [owner] = artifact.repository.split("/");
+  try {
+    if (preUpdateRef) {
+      await api.requestOnce<GitRef>("PATCH", `/git/refs/heads/${encodeURIComponent(trusted.targetBranch)}`, {
+        sha: commit.sha,
+        force: false,
+      });
+    } else {
+      await api.requestOnce<GitRef>("POST", "/git/refs", {
+        ref: `refs/heads/${trusted.targetBranch}`,
+        sha: commit.sha,
+      });
+    }
+  } catch (error) {
+    const status = (error as Error & { status?: number }).status;
+    if (status === 409 || status === 422) {
+      throw new RailStopError("TARGET_HEAD_MOVED", "Target branch changed during publish mutation");
+    }
+    throw error;
+  }
+
+  const publishedRef = await api.optionalRef(trusted.targetBranch);
+  if (!publishedRef || publishedRef.object.sha !== commit.sha) {
+    throw new RailStopError("TARGET_HEAD_MOVED", "Published branch head does not equal created commit");
+  }
+
+  const [owner] = trusted.repository.split("/");
   const query = new URLSearchParams({
     state: "open",
-    head: `${owner}:${artifact.targetBranch}`,
-    base: artifact.baseBranch,
+    head: `${owner}:${trusted.targetBranch}`,
+    base: trusted.baseBranch,
   });
   let pulls = await api.request<PullRequest[]>("GET", `/pulls?${query.toString()}`);
   if (pulls.length > 1) {
@@ -171,15 +235,15 @@ export async function publishArtifact(
   if (pulls.length === 0) {
     try {
       const created = await api.request<PullRequest>("POST", "/pulls", {
-        title: `SI #${artifact.issueNumber}: autonomous implementation`,
-        head: artifact.targetBranch,
-        base: artifact.baseBranch,
+        title: `SI #${trusted.issueNumber}: autonomous implementation`,
+        head: trusted.targetBranch,
+        base: trusted.baseBranch,
         body: [
-          `Closes #${artifact.issueNumber}`,
+          `Closes #${trusted.issueNumber}`,
           "",
-          `Trusted Rail run: ${artifact.runId}`,
+          `Trusted Rail run: ${trusted.runId}`,
           `Artifact digest: ${artifact.digest}`,
-          `Published parent: ${artifact.parentSha}`,
+          `Published parent: ${trusted.parentSha}`,
           "",
           "Auto Merge is intentionally disabled. Final merge is Human-controlled.",
         ].join("\n"),
@@ -191,14 +255,9 @@ export async function publishArtifact(
     }
   }
 
-  const publishedRef = await api.optionalRef(artifact.targetBranch);
-  if (!publishedRef || publishedRef.object.sha !== commit.sha) {
-    throw new RailStopError("TARGET_HEAD_MOVED", "Published branch head does not equal created commit");
-  }
-
   return {
     publishedHeadSha: commit.sha,
-    branchName: artifact.targetBranch,
+    branchName: trusted.targetBranch,
     prNumber: pulls[0].number,
     artifactDigest: artifact.digest,
     recovered: false,

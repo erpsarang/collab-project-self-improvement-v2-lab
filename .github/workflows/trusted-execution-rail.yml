@@ -24,7 +24,7 @@ on:
 permissions: {}
 
 concurrency:
-  group: trusted-rail-${{ inputs.issue_number }}
+  group: trusted-rail-${{ inputs.target_branch }}
   cancel-in-progress: false
 
 jobs:

@@ -11,11 +11,12 @@ Bootstrap은 Rail이 존재하기 전에 외부 신뢰를 최초로 세우는 1�
 | 영역 | 권한 | 역할 |
 |---|---|---|
 | `approve` | 없음 | `trusted-rail-approval` environment의 Human 시작 승인 |
-| `implement` / `fix-*` | `contents: read` | Codex가 workspace만 수정. publish credential 없음 |
-| `publish-*` | `contents: write`, `pull-requests: write` | immutable artifact 검증 후 GitHub API publish |
-| `verify-*` | `contents: read` | exact `publishedHeadSha` checkout, artifact/test/typecheck 검증 |
-| `semantic-*` | `contents: read` | verified SHA만 semantic review |
-| `terminal-state` | 없음 | `MERGE_READY` 또는 `STOPPED(reason)` 결정 |
+| `implement_or_fix` | `contents: read`, `issues: read` | Codex가 workspace만 수정하고 untrusted patch만 생성. publish credential 없음 |
+| `seal_artifact` | `contents: read` | approved root의 trusted tooling으로 candidate patch를 별도 workspace에 적용하고 immutable artifact를 봉인 |
+| `publish` | `contents: write`, `pull-requests: write` | trusted provenance와 sealed artifact 검증 후 GitHub API publish |
+| `verify_published` | `contents: read` | exact `publishedHeadSha` checkout, artifact/test/typecheck 검증 |
+| `semantic_review` | `contents: read` | verified SHA만 read-only semantic review |
+| `terminal_state` | 없음 | `MERGE_READY` 또는 `STOPPED(reason)` 결정 |
 
 ## Required one-time configuration
 
@@ -26,25 +27,52 @@ Bootstrap은 Rail이 존재하기 전에 외부 신뢰를 최초로 세우는 1�
 
 `CODEX_API_KEY`는 Codex 실행 job에만 전달한다. publish job은 OpenAI key를 받지 않고 job-scoped `GITHUB_TOKEN`만 사용한다. 반대로 Codex job에는 publish token을 전달하지 않는다.
 
-## Immutable artifact
+## Candidate patch와 trusted sealing
 
-Codex 실행 후 **trusted base에서 미리 빌드된 artifact builder**가 다음을 생성한다.
+Codex가 실행되는 workspace는 신뢰하지 않는다. Codex job은 source 변경을 **untrusted binary patch**로만 내보낸다. 그 workspace의 `dist/`, artifact builder, manifest 또는 digest는 publish 근거로 사용하지 않는다.
 
-- exact `rootBaseSha`와 iteration `parentSha`
-- issue/run identity
-- target branch와 expected previous HEAD
-- 정렬된 declared changed paths
-- 파일별 operation, complete base64 content, SHA-256
-- 전체 canonical artifact SHA-256 digest
+별도 `seal_artifact` job은 다음 순서로 artifact를 만든다.
 
-정상 Runtime artifact는 `.github/`, `package*.json`, `scripts/`, `src/trusted-rail/`, 이 문서를 수정할 수 없다. Rail 자체의 변경은 별도 Human-controlled trust boundary에서 다룬다.
+1. `rootBaseSha`에서 trusted tooling을 별도 디렉터리에 checkout하고 build한다.
+2. `parentSha`를 별도 candidate workspace에 checkout한다.
+3. untrusted patch를 candidate workspace에 적용하되 candidate code는 실행하지 않는다.
+4. trusted tooling의 builder를 candidate workspace를 대상으로 실행한다.
+5. repository, base/root SHA, parent SHA, target branch, expected HEAD, issue/run identity를 trusted workflow input에서 주입한다.
+6. 정렬된 changed paths, 파일별 complete base64 content/SHA-256, canonical artifact digest를 생성한다.
+7. publish job은 이 sealed artifact만 받으며 provenance를 trusted workflow inputs와 다시 대조한다.
+
+정상 Runtime artifact는 `.github`/`.github/**`, `scripts`/`scripts/**`, `src/trusted-rail`/`src/trusted-rail/**`, `.trusted-rail`/`.trusted-rail/**`, `package.json`, `package-lock.json`, `tsconfig.json`, 이 문서를 수정할 수 없다. Rail 자체의 변경은 별도 Human-controlled trust boundary에서 다룬다.
+
+## Branch update race와 REST API 한계
+
+GitHub REST ref update API는 mutation 요청에 `expected old SHA`를 함께 전달하는 true compare-and-swap 기능을 제공하지 않는다. 따라서 외부 writer가 **마지막 HEAD 확인과 ref mutation 사이**에 branch를 움직이는 매우 작은 race window를 API 수준에서 완전히 제거할 수 없다.
+
+이 Rail은 그 한계를 숨기지 않고 다음으로 최소화한다.
+
+- concurrency key를 `target_branch` 기준으로 설정해 동일 Rail branch의 실행을 직렬화한다.
+- publish 시작 시 expected HEAD를 검증하고, commit 준비 후 ref mutation 직전에 즉시 다시 검증한다.
+- ref create/update 요청은 재시도하지 않는다.
+- update는 `force: false`만 사용한다.
+- mutation 직후 exact branch HEAD가 생성한 commit SHA와 같은지 다시 검증한다.
+- mismatch/409/422는 `STOPPED(TARGET_HEAD_MOVED)`로 드러낸다.
+
+외부 writer와의 마지막 순간 race 자체는 알려진 trust limitation으로 남는다.
+
+## Semantic Review invariant
+
+Semantic Review 결과는 다음 양방향 규칙을 만족해야 한다.
+
+- `PASS` → `findings.length === 0`
+- `FINDING` → `findings.length > 0`
+
+모순된 결과는 `MERGE_READY`로 진행하지 않고 `STOPPED(SEMANTIC_REVIEW_FAILED)`로 종료한다.
 
 ## Bounded loop
 
 - `MAX_FIX_ATTEMPTS = 2`
 - `MAX_PUBLISH_RECOVERY_ATTEMPTS = 2`
 
-Semantic Review finding이 있으면 최대 두 번만 FIX → PUBLISH → VERIFY → REVIEW를 반복한다. 두 번째 fix 이후에도 finding이 남으면 `STOPPED(FIX_BUDGET_EXHAUSTED)`다. Auto Merge는 존재하지 않는다.
+Semantic Review finding이 있으면 최대 두 번만 FIX → SEAL → PUBLISH → VERIFY → REVIEW를 반복한다. 두 번째 fix 이후에도 finding이 남으면 `STOPPED(FIX_BUDGET_EXHAUSTED)`다. Auto Merge는 존재하지 않는다.
 
 ## Success invariant
 

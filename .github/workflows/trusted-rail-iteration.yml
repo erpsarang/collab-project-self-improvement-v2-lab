@@ -67,8 +67,6 @@ jobs:
           cache: npm
 
       - run: npm ci
-      - name: Build trusted artifact tooling before Codex
-        run: npm run build --silent
 
       - name: Validate exact parent checkout
         shell: bash
@@ -103,7 +101,7 @@ jobs:
               `Issue #${issue}를 구현하세요.`, '',
               '규칙:',
               '- workspace source만 수정하고 GitHub publish/PR/merge는 수행하지 마세요.',
-              '- .github/, package.json, package-lock.json, scripts/, src/trusted-rail/, docs/trusted-execution-rail.md는 수정하지 마세요.',
+              '- .github/, package.json, package-lock.json, scripts/, src/trusted-rail/, docs/trusted-execution-rail.md, tsconfig.json은 수정하지 마세요.',
               '- 기존 아키텍처를 존중하고 최소 변경으로 구현하세요.',
               '- 구현에 필요한 테스트를 추가하세요.', '',
               `제목: ${data.title}`, '', data.body || '(본문 없음)',
@@ -126,7 +124,7 @@ jobs:
           아래 semantic review finding만 수정하세요.
           새 기능을 확장하지 말고 finding을 해결하는 최소 변경만 하세요.
           GitHub publish/PR/merge를 수행하지 마세요.
-          .github/, package.json, package-lock.json, scripts/, src/trusted-rail/, docs/trusted-execution-rail.md는 수정하지 마세요.
+          .github/, package.json, package-lock.json, scripts/, src/trusted-rail/, docs/trusted-execution-rail.md, tsconfig.json은 수정하지 마세요.
 
           Review result:
           EOF_PROMPT
@@ -140,28 +138,91 @@ jobs:
           sandbox: workspace-write
           safety-strategy: drop-sudo
 
-      - name: Freeze immutable artifact before executing changed code
-        env:
-          RAIL_PARENT_SHA: ${{ inputs.parent_sha }}
-          RAIL_EXPECTED_HEAD: ${{ inputs.expected_head }}
-          RAIL_OUTPUT_PATH: .trusted-rail/artifact/artifact.json
-        run: node dist/trusted-rail/build-artifact.js
+      - name: Freeze untrusted candidate patch before executing changed code
+        shell: bash
+        run: |
+          mkdir -p .trusted-rail/candidate
+          git add -N -- .
+          git diff --binary --full-index HEAD -- . ':(exclude).trusted-rail' ':(exclude).trusted-rail/**' > .trusted-rail/candidate/candidate.patch
+          test -s .trusted-rail/candidate/candidate.patch
 
-      - name: Verify task-local change
+      - name: Verify task-local change (untrusted evidence only)
         run: |
           npm test
           npm run typecheck
 
       - uses: actions/upload-artifact@v4
         with:
-          name: implementation-${{ inputs.attempt }}
-          path: .trusted-rail/artifact/
+          name: candidate-${{ inputs.attempt }}
+          path: .trusted-rail/candidate/candidate.patch
+          if-no-files-found: error
+          retention-days: 1
+
+  seal_artifact:
+    name: SEAL ARTIFACT (trusted read-only boundary)
+    needs: implement_or_fix
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout trusted tooling from approved root
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.root_base_sha }}
+          path: trusted-tooling
+          fetch-depth: 1
+          persist-credentials: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: trusted-tooling/package-lock.json
+
+      - name: Build trusted sealing tooling
+        working-directory: trusted-tooling
+        run: |
+          npm ci
+          npm run build --silent
+
+      - name: Checkout exact parent into isolated candidate workspace
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.parent_sha }}
+          path: candidate
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: candidate-${{ inputs.attempt }}
+          path: candidate/.trusted-rail/incoming
+
+      - name: Apply untrusted patch without executing candidate code
+        working-directory: candidate
+        shell: bash
+        run: |
+          test "$(git rev-parse HEAD)" = "${{ inputs.parent_sha }}"
+          git apply --binary --index .trusted-rail/incoming/candidate.patch
+
+      - name: Seal candidate with trusted tooling and trusted provenance
+        working-directory: candidate
+        env:
+          RAIL_PARENT_SHA: ${{ inputs.parent_sha }}
+          RAIL_EXPECTED_HEAD: ${{ inputs.expected_head }}
+          RAIL_OUTPUT_PATH: .trusted-rail/artifact/artifact.json
+        run: node ../trusted-tooling/dist/trusted-rail/build-artifact.js
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sealed-implementation-${{ inputs.attempt }}
+          path: candidate/.trusted-rail/artifact/
           if-no-files-found: error
           retention-days: 1
 
   publish:
     name: PUBLISH (trusted write boundary)
-    needs: implement_or_fix
+    needs: seal_artifact
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -184,11 +245,13 @@ jobs:
       - run: npm run build --silent
       - uses: actions/download-artifact@v4
         with:
-          name: implementation-${{ inputs.attempt }}
+          name: sealed-implementation-${{ inputs.attempt }}
           path: .trusted-rail/artifact
       - id: publish
         env:
           GITHUB_TOKEN: ${{ github.token }}
+          RAIL_PARENT_SHA: ${{ inputs.parent_sha }}
+          RAIL_EXPECTED_HEAD: ${{ inputs.expected_head }}
           RAIL_ARTIFACT_PATH: .trusted-rail/artifact/artifact.json
           RAIL_PUBLISH_RESULT_PATH: .trusted-rail/publish/publish-result.json
         run: node dist/trusted-rail/publish-cli.js
@@ -219,7 +282,7 @@ jobs:
       - run: npm ci
       - uses: actions/download-artifact@v4
         with:
-          name: implementation-${{ inputs.attempt }}
+          name: sealed-implementation-${{ inputs.attempt }}
           path: .trusted-rail/artifact
       - run: npm run build --silent
       - name: Verify manifest, file digests and branch HEAD
@@ -246,6 +309,12 @@ jobs:
           ref: ${{ needs.publish.outputs.published_head }}
           fetch-depth: 0
           persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run build --silent
       - name: Codex read-only semantic review
         uses: openai/codex-action@v1
         with:
@@ -280,9 +349,10 @@ jobs:
             Exact verified published HEAD `${{ needs.publish.outputs.published_head }}`를 리뷰하세요.
             parent `${{ inputs.parent_sha }}` 이후 변경의 correctness, security, trust-boundary 위반만 검토하세요.
             미용/취향/사소한 제안은 finding으로 만들지 마세요. 실제 수정이 필요한 P1/P2만 FINDING으로 반환하세요.
+            PASS이면 findings는 반드시 빈 배열이어야 하고, FINDING이면 findings가 하나 이상이어야 합니다.
             코드나 GitHub 상태를 수정하지 마세요.
       - id: parse
-        run: node -e "const r=require('./semantic-review.json'); if(r.status==='FINDING'&&!r.findings.length) process.exit(2); require('fs').appendFileSync(process.env.GITHUB_OUTPUT,'status='+r.status+'\\n')"
+        run: node dist/trusted-rail/semantic-review-cli.js semantic-review.json
       - uses: actions/upload-artifact@v4
         with:
           name: semantic-review-${{ inputs.attempt }}
@@ -292,13 +362,14 @@ jobs:
   iteration_terminal:
     name: Iteration result
     if: ${{ always() }}
-    needs: [implement_or_fix, publish, verify_published, semantic_review]
+    needs: [implement_or_fix, seal_artifact, publish, verify_published, semantic_review]
     runs-on: ubuntu-latest
     permissions: {}
     outputs:
       status: ${{ steps.result.outputs.status }}
     env:
       IMPLEMENT_RESULT: ${{ needs.implement_or_fix.result }}
+      SEAL_RESULT: ${{ needs.seal_artifact.result }}
       PUBLISH_RESULT: ${{ needs.publish.result }}
       PUBLISH_STOP: ${{ needs.publish.outputs.stop_reason }}
       VERIFY_RESULT: ${{ needs.verify_published.result }}
@@ -310,6 +381,8 @@ jobs:
         run: |
           if [ "$IMPLEMENT_RESULT" != "success" ]; then
             status="STOPPED(IMPLEMENT_OR_FIX_FAILED)"
+          elif [ "$SEAL_RESULT" != "success" ]; then
+            status="STOPPED(ARTIFACT_SEAL_FAILED)"
           elif [ "$PUBLISH_RESULT" != "success" ]; then
             status="STOPPED(${PUBLISH_STOP:-PUBLISH_FAILED})"
           elif [ "$VERIFY_RESULT" != "success" ]; then
