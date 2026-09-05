@@ -6,9 +6,9 @@ import { Task, type TaskStatus } from "../domain/task.js";
 import type { TaskRepository } from "./task-repository.js";
 
 type TaskRow = {
-  idHex: string;
-  projectIdHex: string;
-  titleHex: string;
+  id: string;
+  projectId: string;
+  title: string;
   status: TaskStatus;
 };
 
@@ -19,10 +19,6 @@ const unsupportedSQLitePathError =
 
 function sqlText(value: string): string {
   return `CAST(X'${Buffer.from(value, "utf8").toString("hex")}' AS TEXT)`;
-}
-
-function decodeHexText(value: string): string {
-  return Buffer.from(value, "hex").toString("utf8");
 }
 
 function isUnsupportedSQLitePath(databasePath: string): boolean {
@@ -66,15 +62,15 @@ export class SQLiteTaskRepository implements TaskRepository {
   async findByProjectId(projectId: string): Promise<Task[]> {
     await this.ready;
     const output = await this.execute(
-      `SELECT hex(id) AS idHex, hex(project_id) AS projectIdHex, hex(title) AS titleHex, status FROM tasks WHERE project_id = ${sqlText(projectId)} ORDER BY rowid;`,
+      `SELECT id, project_id AS projectId, title, status FROM tasks WHERE project_id = ${sqlText(projectId)} ORDER BY rowid;`,
       true,
     );
     const rows = output.trim() === "" ? [] : JSON.parse(output) as TaskRow[];
 
     return rows.map((row) => new Task(
-      decodeHexText(row.idHex),
-      decodeHexText(row.projectIdHex),
-      decodeHexText(row.titleHex),
+      row.id,
+      row.projectId,
+      row.title,
       row.status,
     ));
   }
