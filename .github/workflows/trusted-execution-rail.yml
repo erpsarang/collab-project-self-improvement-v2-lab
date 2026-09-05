@@ -1,0 +1,131 @@
+name: Trusted Execution Rail
+
+on:
+  workflow_dispatch:
+    inputs:
+      issue_number:
+        description: "Dogfooding Issue number"
+        required: true
+        type: string
+      base_sha:
+        description: "Exact approved main SHA"
+        required: true
+        type: string
+      target_branch:
+        description: "New self-improvement/<issue> branch"
+        required: true
+        type: string
+      expected_head:
+        description: "Expected existing target HEAD; empty for a fresh branch"
+        required: false
+        default: ""
+        type: string
+
+permissions: {}
+
+concurrency:
+  group: trusted-rail-${{ inputs.target_branch }}
+  cancel-in-progress: false
+
+jobs:
+  approve:
+    name: Human start approval
+    runs-on: ubuntu-latest
+    environment: trusted-rail-approval
+    permissions: {}
+    steps:
+      - run: echo "Trusted Rail start approved by protected environment boundary."
+
+  iteration_0:
+    name: IMPLEMENT → PUBLISH → VERIFY → REVIEW
+    needs: approve
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: read
+    uses: ./.github/workflows/trusted-rail-iteration.yml
+    with:
+      attempt: "0"
+      issue_number: ${{ inputs.issue_number }}
+      root_base_sha: ${{ inputs.base_sha }}
+      parent_sha: ${{ inputs.base_sha }}
+      target_branch: ${{ inputs.target_branch }}
+      expected_head: ${{ inputs.expected_head }}
+    secrets:
+      CODEX_API_KEY: ${{ secrets.CODEX_API_KEY }}
+
+  iteration_1:
+    name: FIX #1 → PUBLISH → VERIFY → REVIEW
+    needs: iteration_0
+    if: ${{ always() && needs.iteration_0.outputs.status == 'FINDING' }}
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: read
+    uses: ./.github/workflows/trusted-rail-iteration.yml
+    with:
+      attempt: "1"
+      issue_number: ${{ inputs.issue_number }}
+      root_base_sha: ${{ inputs.base_sha }}
+      parent_sha: ${{ needs.iteration_0.outputs.published_head }}
+      target_branch: ${{ inputs.target_branch }}
+      expected_head: ${{ needs.iteration_0.outputs.published_head }}
+      previous_review_artifact: semantic-review-0
+    secrets:
+      CODEX_API_KEY: ${{ secrets.CODEX_API_KEY }}
+
+  iteration_2:
+    name: FIX #2 → PUBLISH → VERIFY → REVIEW
+    needs: iteration_1
+    if: ${{ always() && needs.iteration_1.outputs.status == 'FINDING' }}
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: read
+    uses: ./.github/workflows/trusted-rail-iteration.yml
+    with:
+      attempt: "2"
+      issue_number: ${{ inputs.issue_number }}
+      root_base_sha: ${{ inputs.base_sha }}
+      parent_sha: ${{ needs.iteration_1.outputs.published_head }}
+      target_branch: ${{ inputs.target_branch }}
+      expected_head: ${{ needs.iteration_1.outputs.published_head }}
+      previous_review_artifact: semantic-review-1
+    secrets:
+      CODEX_API_KEY: ${{ secrets.CODEX_API_KEY }}
+
+  terminal_state:
+    name: Terminal state
+    if: ${{ always() }}
+    needs: [iteration_0, iteration_1, iteration_2]
+    runs-on: ubuntu-latest
+    permissions: {}
+    env:
+      S0: ${{ needs.iteration_0.outputs.status }}
+      S1: ${{ needs.iteration_1.outputs.status }}
+      S2: ${{ needs.iteration_2.outputs.status }}
+    steps:
+      - name: Resolve bounded terminal state
+        run: |
+          if [ "$S0" = "PASS" ]; then
+            state="MERGE_READY"
+          elif [[ "$S0" == STOPPED* ]] || [ -z "$S0" ]; then
+            state="${S0:-STOPPED(RAIL_ITERATION_FAILED)}"
+          elif [ "$S1" = "PASS" ]; then
+            state="MERGE_READY"
+          elif [[ "$S1" == STOPPED* ]] || [ -z "$S1" ]; then
+            state="${S1:-STOPPED(RAIL_ITERATION_FAILED)}"
+          elif [ "$S2" = "PASS" ]; then
+            state="MERGE_READY"
+          elif [[ "$S2" == STOPPED* ]] || [ -z "$S2" ]; then
+            state="${S2:-STOPPED(RAIL_ITERATION_FAILED)}"
+          else
+            state="STOPPED(FIX_BUDGET_EXHAUSTED)"
+          fi
+
+          echo "## Trusted Execution Rail" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "**Final state: $state**" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "Auto Merge is disabled. Human decides the final merge." >> "$GITHUB_STEP_SUMMARY"
+          echo "$state"
