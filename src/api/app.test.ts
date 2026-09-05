@@ -130,6 +130,40 @@ test("POST /projects rejects project names containing NUL", async () => {
   assert.deepEqual(await response.json(), { error: "Project name is required" });
 });
 
+test("POST /projects rejects project names containing an unpaired surrogate", async () => {
+  const baseUrl = await startServer();
+  const response = await fetch(`${baseUrl}/projects`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: String.raw`{"name":"a\uD800b"}`,
+  });
+
+  assert.equal(response.status, 400);
+  assert.deepEqual(await response.json(), { error: "Project name is required" });
+});
+
+test("SQLite-backed projects at the request limit can be retrieved", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "projects-api-sqlite-"));
+  temporaryDirectories.push(directory);
+  const baseUrl = await startServer(
+    new SQLiteProjectRepository(join(directory, "projects.sqlite")),
+  );
+  const emptyRequestBytes = Buffer.byteLength(JSON.stringify({ name: "" }));
+  const name = "x".repeat(1024 * 1024 - emptyRequestBytes);
+  const createResponse = await fetch(`${baseUrl}/projects`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ name }),
+  });
+
+  assert.equal(createResponse.status, 201);
+  const created = await createResponse.json() as { id: string; name: string };
+  const getResponse = await fetch(`${baseUrl}/projects/${created.id}`);
+
+  assert.equal(getResponse.status, 200);
+  assert.deepEqual(await getResponse.json(), created);
+});
+
 test("POST /projects rejects request bodies larger than 1 MiB", async () => {
   const baseUrl = await startServer();
   const response = await fetch(`${baseUrl}/projects`, {

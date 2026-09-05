@@ -9,6 +9,24 @@ const maxRequestBodyBytes = 1024 * 1024;
 
 class RequestBodyTooLargeError extends Error {}
 
+function hasUnpairedSurrogate(value: string): boolean {
+  for (let index = 0; index < value.length; index += 1) {
+    const codeUnit = value.charCodeAt(index);
+
+    if (codeUnit >= 0xd800 && codeUnit <= 0xdbff) {
+      const nextCodeUnit = value.charCodeAt(index + 1);
+      if (nextCodeUnit < 0xdc00 || nextCodeUnit > 0xdfff) {
+        return true;
+      }
+      index += 1;
+    } else if (codeUnit >= 0xdc00 && codeUnit <= 0xdfff) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
 function sendJson(response: ServerResponse, status: number, body: unknown): void {
   response.writeHead(status, jsonHeaders);
   response.end(JSON.stringify(body));
@@ -119,6 +137,7 @@ async function handleRequest(
       || typeof body.name !== "string"
       || body.name.trim() === ""
       || body.name.includes("\0")
+      || hasUnpairedSurrogate(body.name)
     ) {
       sendJson(response, 400, { error: "Project name is required" });
       return;

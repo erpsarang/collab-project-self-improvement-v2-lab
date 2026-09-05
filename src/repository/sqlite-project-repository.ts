@@ -10,6 +10,8 @@ type ProjectRow = {
   name: string;
 };
 
+const sqliteOutputBufferBytes = 2 * 1024 * 1024;
+
 function sqlText(value: string): string {
   return `CAST(X'${Buffer.from(value, "utf8").toString("hex")}' AS TEXT)`;
 }
@@ -48,6 +50,7 @@ export class SQLiteProjectRepository implements ProjectRepository {
     return execFileSync("sqlite3", ["-batch", ...(json ? ["-json"] : []), this.databasePath], {
       encoding: "utf8",
       input: sql,
+      maxBuffer: sqliteOutputBufferBytes,
     });
   }
 }
