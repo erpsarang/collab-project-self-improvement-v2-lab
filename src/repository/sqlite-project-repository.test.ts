@@ -21,6 +21,13 @@ afterEach(() => {
   }
 });
 
+test("SQLite repository rejects the unsupported in-memory database path immediately", () => {
+  assert.throws(
+    () => new SQLiteProjectRepository(":memory:"),
+    /PROJECT_DB_PATH=:memory: is not supported/,
+  );
+});
+
 test("projects remain available after the SQLite repository is recreated", async () => {
   const directory = mkdtempSync(join(tmpdir(), "projects-sqlite-"));
   temporaryDirectories.push(directory);
