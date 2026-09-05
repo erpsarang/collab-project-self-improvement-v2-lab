@@ -78,6 +78,18 @@ test("POST /projects rejects an invalid project name", async () => {
   assert.deepEqual(await response.json(), { error: "Project name is required" });
 });
 
+test("POST /projects rejects request bodies larger than 1 MiB", async () => {
+  const baseUrl = await startServer();
+  const response = await fetch(`${baseUrl}/projects`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ name: "x".repeat(1024 * 1024) }),
+  });
+
+  assert.equal(response.status, 413);
+  assert.deepEqual(await response.json(), { error: "Request body too large" });
+});
+
 test("malformed request targets return 400 without stopping the server", async () => {
   const baseUrl = await startServer();
   const { hostname, port } = new URL(baseUrl);

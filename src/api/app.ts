@@ -5,20 +5,63 @@ import { getHealthStatus } from "../service/health-service.js";
 import { ProjectNotFoundError, ProjectService } from "../service/project-service.js";
 
 const jsonHeaders = { "content-type": "application/json; charset=utf-8" };
+const maxRequestBodyBytes = 1024 * 1024;
+
+class RequestBodyTooLargeError extends Error {}
 
 function sendJson(response: ServerResponse, status: number, body: unknown): void {
   response.writeHead(status, jsonHeaders);
   response.end(JSON.stringify(body));
 }
 
-async function readJsonBody(request: IncomingMessage): Promise<unknown> {
-  const chunks: Buffer[] = [];
+function readJsonBody(request: IncomingMessage): Promise<unknown> {
+  return new Promise((resolve, reject) => {
+    const chunks: Buffer[] = [];
+    let totalBytes = 0;
+    let bodyTooLarge = false;
 
-  for await (const chunk of request) {
-    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
-  }
+    const cleanup = (): void => {
+      request.off("data", onData);
+      request.off("end", onEnd);
+      request.off("error", onError);
+    };
+    const onData = (chunk: Buffer | string): void => {
+      if (bodyTooLarge) {
+        return;
+      }
 
-  return JSON.parse(Buffer.concat(chunks).toString("utf8"));
+      const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      totalBytes += buffer.length;
+
+      if (totalBytes > maxRequestBodyBytes) {
+        bodyTooLarge = true;
+        chunks.length = 0;
+        reject(new RequestBodyTooLargeError());
+        return;
+      }
+
+      chunks.push(buffer);
+    };
+    const onEnd = (): void => {
+      cleanup();
+
+      if (!bodyTooLarge) {
+        try {
+          resolve(JSON.parse(Buffer.concat(chunks).toString("utf8")));
+        } catch (error) {
+          reject(error);
+        }
+      }
+    };
+    const onError = (error: Error): void => {
+      cleanup();
+      reject(error);
+    };
+
+    request.on("data", onData);
+    request.on("end", onEnd);
+    request.on("error", onError);
+  });
 }
 
 export function createHttpServer(): Server {
@@ -59,7 +102,12 @@ async function handleRequest(
 
     try {
       body = await readJsonBody(request);
-    } catch {
+    } catch (error) {
+      if (error instanceof RequestBodyTooLargeError) {
+        sendJson(response, 413, { error: "Request body too large" });
+        return;
+      }
+
       sendJson(response, 400, { error: "Request body must be valid JSON" });
       return;
     }
