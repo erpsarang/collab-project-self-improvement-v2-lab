@@ -12,8 +12,8 @@ type ProjectRow = {
 
 const sqliteOutputBufferBytes = 4 * 1024 * 1024;
 const sqliteBusyTimeoutMs = 5000;
-const transientSQLitePathError =
-  "PROJECT_DB_PATH must use a file-backed SQLite database; connection-scoped SQLite paths are not supported";
+const unsupportedSQLitePathError =
+  "PROJECT_DB_PATH must use a plain filesystem path; SQLite file: URIs and connection-scoped paths are not supported";
 
 function sqlText(value: string): string {
   return `CAST(X'${Buffer.from(value, "utf8").toString("hex")}' AS TEXT)`;
@@ -23,63 +23,21 @@ function decodeHexText(value: string): string {
   return Buffer.from(value, "hex").toString("utf8");
 }
 
-function decodedPath(value: string): string {
-  try {
-    return decodeURIComponent(value);
-  } catch {
-    return value;
-  }
-}
-
-function isConnectionScopedSQLitePath(databasePath: string): boolean {
-  if (databasePath === "" || databasePath === ":memory:") {
-    return true;
-  }
-
-  const normalized = decodedPath(databasePath).toLowerCase();
-  if (!normalized.startsWith("file:")) {
-    return false;
-  }
-
-  const withoutFragment = normalized.split("#", 1)[0];
-  if (withoutFragment.startsWith("file::memory:")) {
-    return true;
-  }
-
-  const queryIndex = withoutFragment.indexOf("?");
-  if (queryIndex === -1) {
-    return false;
-  }
-
-  const query = new URLSearchParams(withoutFragment.slice(queryIndex + 1));
-  const modes = query.getAll("mode");
-  return modes.at(-1)?.toLowerCase() === "memory";
-}
-
-function sqliteDatabaseFilePath(databasePath: string): string {
-  const decoded = decodedPath(databasePath);
-  if (!decoded.toLowerCase().startsWith("file:")) {
-    return databasePath;
-  }
-
-  const withoutFragment = decoded.split("#", 1)[0];
-  const queryIndex = withoutFragment.indexOf("?");
-  const uriPath = queryIndex === -1
-    ? withoutFragment
-    : withoutFragment.slice(0, queryIndex);
-
-  return uriPath.slice("file:".length);
+function isUnsupportedSQLitePath(databasePath: string): boolean {
+  return databasePath === ""
+    || databasePath === ":memory:"
+    || databasePath.toLowerCase().startsWith("file:");
 }
 
 export class SQLiteProjectRepository implements ProjectRepository {
   private readonly ready: Promise<void>;
 
   constructor(private readonly databasePath: string) {
-    if (isConnectionScopedSQLitePath(databasePath)) {
-      throw new Error(transientSQLitePathError);
+    if (isUnsupportedSQLitePath(databasePath)) {
+      throw new Error(unsupportedSQLitePathError);
     }
 
-    mkdirSync(dirname(sqliteDatabaseFilePath(databasePath)), { recursive: true });
+    mkdirSync(dirname(databasePath), { recursive: true });
     this.ready = this.execute(`
       CREATE TABLE IF NOT EXISTS projects (
         id TEXT PRIMARY KEY,
