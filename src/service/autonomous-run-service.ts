@@ -22,6 +22,11 @@ export interface AutonomousRunActions {
 }
 
 const isTrustedPath = (path: string): boolean =>
+  path === "package.json" ||
+  path === "package-lock.json" ||
+  path === "tsconfig.json" ||
+  path === "scripts" ||
+  path.startsWith("scripts/") ||
   path === "test" ||
   path.startsWith("test/") ||
   path === "tests" ||
@@ -53,6 +58,7 @@ export class AutonomousRunService {
       stopReason: null,
     };
     const seenFindings = new Set<string>();
+    const declaredChangedPaths = new Set<string>();
 
     const transition = (state: AutonomousRunState, detail?: string): void => {
       provenance.history.push({ state, at: this.now(), ...(detail ? { detail } : {}) });
@@ -85,6 +91,7 @@ export class AutonomousRunService {
       if (changedTrustedArea(change)) {
         return stop("TRUSTED_AREA_CHANGED");
       }
+      change.changedPaths.forEach((path) => declaredChangedPaths.add(path));
       return null;
     };
 
@@ -97,6 +104,7 @@ export class AutonomousRunService {
       if (changedTrustedArea(implementation)) {
         return stop("TRUSTED_AREA_CHANGED");
       }
+      implementation.changedPaths.forEach((path) => declaredChangedPaths.add(path));
 
       let verification = await verify();
       if (verification.status === "UNAVAILABLE") {
@@ -119,6 +127,12 @@ export class AutonomousRunService {
           return stop("PROVENANCE_MISMATCH: publish returned an empty HEAD SHA");
         }
         provenance.publishedHeadSha = publishResult.publishedHeadSha;
+        if (publishResult.changedPaths.some(isTrustedPath)) {
+          return stop("TRUSTED_AREA_CHANGED");
+        }
+        if (publishResult.changedPaths.some((path) => !declaredChangedPaths.has(path))) {
+          return stop("PUBLISHED_ARTIFACT_PATH_MISMATCH");
+        }
 
         const publishedVerification = await verify(publishResult.publishedHeadSha);
         if (publishedVerification.status === "UNAVAILABLE") {

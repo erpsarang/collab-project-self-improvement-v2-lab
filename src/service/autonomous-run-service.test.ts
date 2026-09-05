@@ -18,7 +18,10 @@ const makeActions = (overrides: Partial<AutonomousRunActions> = {}): AutonomousR
     plan: async () => undefined,
     implement: async () => ({ changed: true, changedPaths: ["src/example.ts"] }),
     verify: async () => ({ status: "PASS" }),
-    publish: async () => ({ publishedHeadSha: "published-sha" }),
+    publish: async () => ({
+      publishedHeadSha: "published-sha",
+      changedPaths: ["src/example.ts"],
+    }),
     semanticReview: async (_candidate, publishedHeadSha) => ({
       status: "PASS",
       reviewedHeadSha: publishedHeadSha,
@@ -58,7 +61,10 @@ test("semantic finding automatically enters FIX and re-runs verify/publish/revie
   ];
   const heads = ["head-1", "head-2"];
   const result = await createService(makeActions({
-    publish: async () => ({ publishedHeadSha: heads.shift()! }),
+    publish: async () => ({
+      publishedHeadSha: heads.shift()!,
+      changedPaths: ["src/example.ts"],
+    }),
     semanticReview: async () => reviews.shift()!,
   })).run(candidate);
 
@@ -91,7 +97,7 @@ test("failed published-artifact verification enters bounded FIX and republishes"
   const result = await createService(makeActions({
     publish: async () => {
       publishCalls += 1;
-      return { publishedHeadSha: heads.shift()! };
+      return { publishedHeadSha: heads.shift()!, changedPaths: ["src/example.ts"] };
     },
     verify: async (_candidate, publishedHeadSha) => {
       if (!publishedHeadSha) return { status: "PASS" };
@@ -149,6 +155,53 @@ test("co-located src test file is treated as trusted", async () => {
   assert.equal(result.provenance.stopReason, "TRUSTED_AREA_CHANGED");
 });
 
+test("verification entrypoints are treated as trusted", async () => {
+  for (const path of ["package.json", "package-lock.json", "tsconfig.json", "scripts/run-tests.js"]) {
+    const result = await createService(makeActions({
+      implement: async () => ({ changed: true, changedPaths: [path] }),
+    })).run(candidate);
+
+    assert.equal(result.state, "STOPPED");
+    assert.equal(result.provenance.stopReason, "TRUSTED_AREA_CHANGED");
+  }
+});
+
+test("trusted path introduced by publish stops before published verification", async () => {
+  const verifiedHeads: Array<string | undefined> = [];
+  const result = await createService(makeActions({
+    verify: async (_candidate, publishedHeadSha) => {
+      verifiedHeads.push(publishedHeadSha);
+      return { status: "PASS" };
+    },
+    publish: async () => ({
+      publishedHeadSha: "published-sha",
+      changedPaths: ["src/example.ts", "scripts/run-tests.js"],
+    }),
+  })).run(candidate);
+
+  assert.equal(result.state, "STOPPED");
+  assert.equal(result.provenance.stopReason, "TRUSTED_AREA_CHANGED");
+  assert.deepEqual(verifiedHeads, [undefined]);
+});
+
+test("undeclared path introduced by publish stops before published verification", async () => {
+  const verifiedHeads: Array<string | undefined> = [];
+  const result = await createService(makeActions({
+    verify: async (_candidate, publishedHeadSha) => {
+      verifiedHeads.push(publishedHeadSha);
+      return { status: "PASS" };
+    },
+    publish: async () => ({
+      publishedHeadSha: "published-sha",
+      changedPaths: ["src/example.ts", "src/undeclared.ts"],
+    }),
+  })).run(candidate);
+
+  assert.equal(result.state, "STOPPED");
+  assert.equal(result.provenance.stopReason, "PUBLISHED_ARTIFACT_PATH_MISMATCH");
+  assert.deepEqual(verifiedHeads, [undefined]);
+});
+
 test("no-op fix stops the run", async () => {
   const result = await createService(makeActions({
     semanticReview: async (_candidate, head) => ({
@@ -164,7 +217,10 @@ test("no-op fix stops the run", async () => {
 test("repeated semantic finding stops instead of looping", async () => {
   const heads = ["head-1", "head-2"];
   const result = await createService(makeActions({
-    publish: async () => ({ publishedHeadSha: heads.shift()! }),
+    publish: async () => ({
+      publishedHeadSha: heads.shift()!,
+      changedPaths: ["src/example.ts"],
+    }),
     semanticReview: async (_candidate, head) => ({
       status: "FINDING", reviewedHeadSha: head, findingKey: "same-finding",
     }),
@@ -185,7 +241,7 @@ test("reviewing a different SHA than published stops the run", async () => {
 
 test("empty published HEAD is rejected as provenance mismatch", async () => {
   const result = await createService(makeActions({
-    publish: async () => ({ publishedHeadSha: "   " }),
+    publish: async () => ({ publishedHeadSha: "   ", changedPaths: ["src/example.ts"] }),
   })).run(candidate);
 
   assert.equal(result.state, "STOPPED");

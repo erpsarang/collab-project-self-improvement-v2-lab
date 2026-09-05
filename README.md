@@ -74,8 +74,13 @@ Semantic Review 같은 외부 동작은 `AutonomousRunActions`로 주입합니�
 따라서 task-local에서 검증한 artifact와 실제 GitHub published artifact가 달라질 경우에도,
 검증되지 않은 published HEAD가 `MERGE_READY`로 진행할 수 없습니다.
 
-Trusted 영역은 `test/`, `tests/`, `.github/`뿐 아니라 이 저장소의 co-located test 규칙인
-`src/**/*.test.*`, `src/**/*.spec.*`도 포함합니다. 자동 Fix가 이 영역을 변경하면 Run은 즉시 중단됩니다.
+Trusted 영역은 `test/`, `tests/`, `.github/`, `package.json`, `package-lock.json`, `tsconfig.json`,
+전체 `scripts/`뿐 아니라 이 저장소의 co-located test 규칙인 `src/**/*.test.*`, `src/**/*.spec.*`도
+포함합니다. 자동 Implement/Fix가 이 영역을 변경하면 Run은 즉시 중단됩니다.
+
+`PUBLISH`는 `publishedHeadSha`와 함께 published artifact의 `changedPaths`를 반환해야 합니다.
+서비스는 이 경로들이 Implement/Fix가 선언한 변경 경로에 포함되는지 확인하며, trusted path 또는
+선언되지 않은 path가 있으면 published-HEAD verification과 Semantic Review 전에 중단합니다.
 
 주요 Stop Policy는 verification 실행 불가, 반복 finding, no-op fix, trusted 영역 변경,
 published HEAD와 review SHA 불일치, fix budget 소진, 자동화 예외입니다.

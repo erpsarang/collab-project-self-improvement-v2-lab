@@ -33,6 +33,7 @@ export interface VerificationResult {
 
 export interface PublishResult {
   publishedHeadSha: string;
+  changedPaths: string[];
 }
 
 export interface SemanticReviewResult {
