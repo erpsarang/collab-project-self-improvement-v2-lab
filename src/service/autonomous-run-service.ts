@@ -15,7 +15,7 @@ import {
 export interface AutonomousRunActions {
   plan(candidate: CandidateInput): Promise<void>;
   implement(candidate: CandidateInput): Promise<ChangeResult>;
-  verify(candidate: CandidateInput): Promise<VerificationResult>;
+  verify(candidate: CandidateInput, publishedHeadSha?: string): Promise<VerificationResult>;
   publish(candidate: CandidateInput): Promise<PublishResult>;
   semanticReview(candidate: CandidateInput, publishedHeadSha: string): Promise<SemanticReviewResult>;
   fix(candidate: CandidateInput, reason: string, attempt: number): Promise<ChangeResult>;
@@ -26,7 +26,8 @@ const isTrustedPath = (path: string): boolean =>
   path.startsWith("test/") ||
   path === "tests" ||
   path.startsWith("tests/") ||
-  path.startsWith(".github/");
+  path.startsWith(".github/") ||
+  /(^|\/)src\/.*\.(test|spec)\.[^/]+$/.test(path);
 
 const changedTrustedArea = (change: ChangeResult): boolean =>
   change.changedPaths.some(isTrustedPath);
@@ -64,28 +65,11 @@ export class AutonomousRunService {
       return { state: "STOPPED", provenance };
     };
 
-    const verify = async (): Promise<VerificationResult> => {
-      transition("VERIFY");
-      const result = await this.actions.verify(candidate);
+    const verify = async (publishedHeadSha?: string): Promise<VerificationResult> => {
+      transition("VERIFY", publishedHeadSha ? `publishedHeadSha=${publishedHeadSha}` : undefined);
+      const result = await this.actions.verify(candidate, publishedHeadSha);
       provenance.verificationResults.push(result);
       return result;
-    };
-
-    const publishAndReview = async (): Promise<SemanticReviewResult | AutonomousRunResult> => {
-      transition("PUBLISH");
-      const publishResult = await this.actions.publish(candidate);
-      if (!publishResult.publishedHeadSha.trim()) {
-        return stop("PROVENANCE_MISMATCH: publish returned an empty HEAD SHA");
-      }
-      provenance.publishedHeadSha = publishResult.publishedHeadSha;
-
-      transition("SEMANTIC_REVIEW");
-      const review = await this.actions.semanticReview(candidate, publishResult.publishedHeadSha);
-      provenance.semanticReviewResults.push(review);
-      if (review.reviewedHeadSha !== publishResult.publishedHeadSha) {
-        return stop("PUBLISHED_REVIEW_SHA_MISMATCH");
-      }
-      return review;
     };
 
     const applyFix = async (reason: string): Promise<AutonomousRunResult | null> => {
@@ -129,16 +113,52 @@ export class AutonomousRunService {
       }
 
       while (true) {
-        const reviewOrStop = await publishAndReview();
-        if ("state" in reviewOrStop) return reviewOrStop;
+        transition("PUBLISH");
+        const publishResult = await this.actions.publish(candidate);
+        if (!publishResult.publishedHeadSha.trim()) {
+          return stop("PROVENANCE_MISMATCH: publish returned an empty HEAD SHA");
+        }
+        provenance.publishedHeadSha = publishResult.publishedHeadSha;
 
-        if (reviewOrStop.status === "PASS") {
+        const publishedVerification = await verify(publishResult.publishedHeadSha);
+        if (publishedVerification.status === "UNAVAILABLE") {
+          return stop("VERIFICATION_UNAVAILABLE");
+        }
+        if (publishedVerification.status === "FAIL") {
+          const fixResult = await applyFix(
+            `published-verification:${publishedVerification.summary ?? "failed"}`,
+          );
+          if (fixResult) return fixResult;
+
+          verification = await verify();
+          if (verification.status === "UNAVAILABLE") {
+            return stop("VERIFICATION_UNAVAILABLE");
+          }
+          while (verification.status === "FAIL") {
+            const verifyFixResult = await applyFix(`verification:${verification.summary ?? "failed"}`);
+            if (verifyFixResult) return verifyFixResult;
+            verification = await verify();
+            if (verification.status === "UNAVAILABLE") {
+              return stop("VERIFICATION_UNAVAILABLE");
+            }
+          }
+          continue;
+        }
+
+        transition("SEMANTIC_REVIEW");
+        const review = await this.actions.semanticReview(candidate, publishResult.publishedHeadSha);
+        provenance.semanticReviewResults.push(review);
+        if (review.reviewedHeadSha !== publishResult.publishedHeadSha) {
+          return stop("PUBLISHED_REVIEW_SHA_MISMATCH");
+        }
+
+        if (review.status === "PASS") {
           transition("MERGE_READY");
           provenance.finalState = "MERGE_READY";
           return { state: "MERGE_READY", provenance };
         }
 
-        const findingKey = reviewOrStop.findingKey?.trim();
+        const findingKey = review.findingKey?.trim();
         if (!findingKey) {
           return stop("UNDECIDABLE_REVIEW_FINDING");
         }
