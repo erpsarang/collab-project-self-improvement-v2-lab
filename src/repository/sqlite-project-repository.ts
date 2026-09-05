@@ -25,6 +25,10 @@ export class SQLiteProjectRepository implements ProjectRepository {
   private readonly ready: Promise<void>;
 
   constructor(private readonly databasePath: string) {
+    if (databasePath === ":memory:") {
+      throw new Error("PROJECT_DB_PATH=:memory: is not supported; use a file-backed SQLite path");
+    }
+
     mkdirSync(dirname(databasePath), { recursive: true });
     this.ready = this.execute(`
       CREATE TABLE IF NOT EXISTS projects (
