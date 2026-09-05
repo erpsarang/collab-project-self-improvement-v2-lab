@@ -13,14 +13,14 @@ export class ProjectNotFoundError extends Error {
 export class ProjectService {
   constructor(private readonly projectRepository: ProjectRepository) {}
 
-  create(name: string): Project {
+  async create(name: string): Promise<Project> {
     const project = new Project(randomUUID(), name);
-    this.projectRepository.save(project);
+    await this.projectRepository.save(project);
     return project;
   }
 
-  getById(id: string): Project {
-    const project = this.projectRepository.findById(id);
+  async getById(id: string): Promise<Project> {
+    const project = await this.projectRepository.findById(id);
 
     if (!project) {
       throw new ProjectNotFoundError(id);

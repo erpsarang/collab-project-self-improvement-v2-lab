@@ -1,6 +1,6 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 
-import { InMemoryProjectRepository } from "../repository/project-repository.js";
+import type { ProjectRepository } from "../repository/project-repository.js";
 import { getHealthStatus } from "../service/health-service.js";
 import { ProjectNotFoundError, ProjectService } from "../service/project-service.js";
 
@@ -8,6 +8,28 @@ const jsonHeaders = { "content-type": "application/json; charset=utf-8" };
 const maxRequestBodyBytes = 1024 * 1024;
 
 class RequestBodyTooLargeError extends Error {}
+
+function hasUnpairedSurrogate(value: string): boolean {
+  for (let index = 0; index < value.length; index += 1) {
+    const codeUnit = value.charCodeAt(index);
+
+    if (codeUnit >= 0xd800 && codeUnit <= 0xdbff) {
+      if (index + 1 >= value.length) {
+        return true;
+      }
+
+      const nextCodeUnit = value.charCodeAt(index + 1);
+      if (nextCodeUnit < 0xdc00 || nextCodeUnit > 0xdfff) {
+        return true;
+      }
+      index += 1;
+    } else if (codeUnit >= 0xdc00 && codeUnit <= 0xdfff) {
+      return true;
+    }
+  }
+
+  return false;
+}
 
 function sendJson(response: ServerResponse, status: number, body: unknown): void {
   response.writeHead(status, jsonHeaders);
@@ -64,8 +86,8 @@ function readJsonBody(request: IncomingMessage): Promise<unknown> {
   });
 }
 
-export function createHttpServer(): Server {
-  const projectService = new ProjectService(new InMemoryProjectRepository());
+export function createHttpServer(projectRepository: ProjectRepository): Server {
+  const projectService = new ProjectService(projectRepository);
 
   return createServer((request, response) => {
     void handleRequest(request, response, projectService).catch(() => {
@@ -118,12 +140,14 @@ async function handleRequest(
       || !("name" in body)
       || typeof body.name !== "string"
       || body.name.trim() === ""
+      || body.name.includes("\0")
+      || hasUnpairedSurrogate(body.name)
     ) {
       sendJson(response, 400, { error: "Project name is required" });
       return;
     }
 
-    const project = projectService.create(body.name.trim());
+    const project = await projectService.create(body.name.trim());
     sendJson(response, 201, project);
     return;
   }
@@ -131,7 +155,7 @@ async function handleRequest(
   const projectMatch = pathname.match(/^\/projects\/([^/]+)$/);
   if (request.method === "GET" && projectMatch) {
     try {
-      const project = projectService.getById(decodeURIComponent(projectMatch[1]));
+      const project = await projectService.getById(decodeURIComponent(projectMatch[1]));
       sendJson(response, 200, project);
     } catch (error) {
       if (error instanceof ProjectNotFoundError) {

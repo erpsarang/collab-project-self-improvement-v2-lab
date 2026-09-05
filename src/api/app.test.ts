@@ -1,25 +1,44 @@
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync } from "node:fs";
 import { createConnection } from "node:net";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterEach, test } from "node:test";
 
+import { InMemoryProjectRepository, type ProjectRepository } from "../repository/project-repository.js";
+import { SQLiteProjectRepository } from "../repository/sqlite-project-repository.js";
 import { createHttpServer } from "./app.js";
 
 const openServers: ReturnType<typeof createHttpServer>[] = [];
+const temporaryDirectories: string[] = [];
 
 afterEach(async () => {
   await Promise.all(openServers.splice(0).map((server) => new Promise<void>((resolve, reject) => {
     server.close((error) => error ? reject(error) : resolve());
   })));
+  for (const directory of temporaryDirectories.splice(0)) {
+    rmSync(directory, { recursive: true, force: true });
+  }
 });
 
-async function startServer(): Promise<string> {
-  const server = createHttpServer();
+async function startServer(
+  repository: ProjectRepository = new InMemoryProjectRepository(),
+): Promise<string> {
+  const server = createHttpServer(repository);
   openServers.push(server);
 
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   const address = server.address();
   assert(address && typeof address !== "string");
   return `http://127.0.0.1:${address.port}`;
+}
+
+async function stopServer(): Promise<void> {
+  const server = openServers.pop();
+  assert(server);
+  await new Promise<void>((resolve, reject) => {
+    server.close((error) => error ? reject(error) : resolve());
+  });
 }
 
 test("GET /health returns the service status", async () => {
@@ -40,6 +59,46 @@ test("GET /health with a query string returns the service status", async () => {
   assert.deepEqual(await response.json(), { status: "ok" });
 });
 
+test("GET /health remains responsive while a project save is pending", async () => {
+  let releaseSave!: () => void;
+  let markSaveStarted!: () => void;
+  const saveStarted = new Promise<void>((resolve) => {
+    markSaveStarted = resolve;
+  });
+  const saveGate = new Promise<void>((resolve) => {
+    releaseSave = resolve;
+  });
+  const repository: ProjectRepository = {
+    async save() {
+      markSaveStarted();
+      await saveGate;
+    },
+    async findById() {
+      return undefined;
+    },
+  };
+  const baseUrl = await startServer(repository);
+  const createPromise = fetch(`${baseUrl}/projects`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ name: "Slow project" }),
+  });
+  await saveStarted;
+
+  const healthResponse = await Promise.race([
+    fetch(`${baseUrl}/health`),
+    new Promise<never>((_, reject) => setTimeout(
+      () => reject(new Error("health request was blocked by project save")),
+      250,
+    )),
+  ]);
+
+  assert.equal(healthResponse.status, 200);
+  assert.deepEqual(await healthResponse.json(), { status: "ok" });
+  releaseSave();
+  assert.equal((await createPromise).status, 201);
+});
+
 test("POST /projects creates a project that GET /projects/:id returns", async () => {
   const baseUrl = await startServer();
   const createResponse = await fetch(`${baseUrl}/projects`, {
@@ -54,6 +113,27 @@ test("POST /projects creates a project that GET /projects/:id returns", async ()
   assert.equal(created.name, "First project");
 
   const getResponse = await fetch(`${baseUrl}/projects/${created.id}`);
+  assert.equal(getResponse.status, 200);
+  assert.deepEqual(await getResponse.json(), created);
+});
+
+test("POSTed projects remain available through the API after a SQLite-backed restart", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "projects-api-sqlite-"));
+  temporaryDirectories.push(directory);
+  const databasePath = join(directory, "projects.sqlite");
+  const firstBaseUrl = await startServer(new SQLiteProjectRepository(databasePath));
+  const createResponse = await fetch(`${firstBaseUrl}/projects`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ name: "Restart-safe project" }),
+  });
+  assert.equal(createResponse.status, 201);
+  const created = await createResponse.json() as { id: string; name: string };
+  await stopServer();
+
+  const restartedBaseUrl = await startServer(new SQLiteProjectRepository(databasePath));
+  const getResponse = await fetch(`${restartedBaseUrl}/projects/${created.id}`);
+
   assert.equal(getResponse.status, 200);
   assert.deepEqual(await getResponse.json(), created);
 });
@@ -76,6 +156,77 @@ test("POST /projects rejects an invalid project name", async () => {
 
   assert.equal(response.status, 400);
   assert.deepEqual(await response.json(), { error: "Project name is required" });
+});
+
+test("POST /projects rejects project names containing NUL", async () => {
+  const baseUrl = await startServer();
+  const response = await fetch(`${baseUrl}/projects`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ name: "x\0y" }),
+  });
+
+  assert.equal(response.status, 400);
+  assert.deepEqual(await response.json(), { error: "Project name is required" });
+});
+
+test("POST /projects rejects project names containing an unpaired surrogate", async () => {
+  const baseUrl = await startServer();
+  const response = await fetch(`${baseUrl}/projects`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: String.raw`{"name":"a\uD800b"}`,
+  });
+
+  assert.equal(response.status, 400);
+  assert.deepEqual(await response.json(), { error: "Project name is required" });
+});
+
+test("POST /projects rejects project names ending with an unpaired high surrogate", async () => {
+  const baseUrl = await startServer();
+  const response = await fetch(`${baseUrl}/projects`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: String.raw`{"name":"a\uD800"}`,
+  });
+
+  assert.equal(response.status, 400);
+  assert.deepEqual(await response.json(), { error: "Project name is required" });
+});
+
+test("POST /projects accepts project names containing a valid surrogate pair", async () => {
+  const baseUrl = await startServer();
+  const response = await fetch(`${baseUrl}/projects`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: String.raw`{"name":"a\uD83D\uDE00"}`,
+  });
+
+  assert.equal(response.status, 201);
+  const created = await response.json() as { id: string; name: string };
+  assert.equal(created.name, "a😀");
+});
+
+test("SQLite-backed projects at the request limit can be retrieved", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "projects-api-sqlite-"));
+  temporaryDirectories.push(directory);
+  const baseUrl = await startServer(
+    new SQLiteProjectRepository(join(directory, "projects.sqlite")),
+  );
+  const emptyRequestBytes = Buffer.byteLength(JSON.stringify({ name: "" }));
+  const name = "x".repeat(1024 * 1024 - emptyRequestBytes);
+  const createResponse = await fetch(`${baseUrl}/projects`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ name }),
+  });
+
+  assert.equal(createResponse.status, 201);
+  const created = await createResponse.json() as { id: string; name: string };
+  const getResponse = await fetch(`${baseUrl}/projects/${created.id}`);
+
+  assert.equal(getResponse.status, 200);
+  assert.deepEqual(await getResponse.json(), created);
 });
 
 test("POST /projects rejects request bodies larger than 1 MiB", async () => {

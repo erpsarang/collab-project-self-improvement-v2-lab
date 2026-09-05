@@ -1,7 +1,9 @@
 import { createHttpServer } from "./api/app.js";
+import { SQLiteProjectRepository } from "./repository/sqlite-project-repository.js";
 
 const port = Number(process.env.PORT ?? 3000);
-const server = createHttpServer();
+const databasePath = process.env.PROJECT_DB_PATH ?? "data/projects.sqlite";
+const server = createHttpServer(new SQLiteProjectRepository(databasePath));
 
 server.listen(port, () => {
   console.log(`Server listening on http://localhost:${port}`);
