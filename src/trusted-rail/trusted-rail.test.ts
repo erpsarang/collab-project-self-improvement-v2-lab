@@ -19,10 +19,15 @@ test("trusted rail has one label-based human start boundary", () => {
   assert.match(workflow, /issues:\n\s+types: \[labeled\]/);
   assert.match(workflow, /label !== 'SI-승인'/);
   assert.match(workflow, /\['write', 'maintain', 'admin'\]/);
-  assert.match(workflow, /\/git\/ref\/heads\/main/);
+  assert.match(workflow, /EVENT_ROOT_BASE_SHA: \$\{\{ github\.sha \}\}/);
+  assert.match(workflow, /mainRef\.data\.object\.sha !== base/);
+  assert.match(workflow, /STOPPED\(MAIN_MOVED_SINCE_APPROVAL\)/);
   assert.match(workflow, /self-improvement\/\$\{issue\}/);
   assert.match(workflow, /STOPPED\(DUPLICATE_APPROVAL\)/);
+  assert.match(workflow, /if \(await isTrustedApprover\(approvalActor\)\) trustedApprovals \+= 1/);
+  assert.doesNotMatch(workflow, /approvalEvents \+=/);
   assert.match(workflow, /STOPPED\(TARGET_BRANCH_EXISTS\)/);
+  assert.match(workflow, /trusted-rail-nonapproval-\{0\}.*github\.run_id/);
   assert.doesNotMatch(workflow, /workflow_dispatch|trusted-rail-approval|environment:/);
 });
 

@@ -10,7 +10,7 @@ Bootstrap은 Rail이 존재하기 전에 외부 신뢰를 최초로 세우는 1�
 
 | 영역 | 권한 | 역할 |
 |---|---|---|
-| `authorize_start` | `contents: read`, `issues: read`, `pull-requests: read` | 정확한 `SI-승인` label event actor의 repository permission과 fresh-run 조건을 검증하고 `main` HEAD를 freeze |
+| `authorize_start` | `contents: read`, `issues: read`, `pull-requests: read` | 정확한 `SI-승인` label event actor의 repository permission과 fresh-run 조건을 검증하고 event-time `main` SHA를 freeze |
 | `implement_or_fix` | `contents: read`, `issues: read` | Codex가 workspace만 수정하고 untrusted patch만 생성. publish credential 없음 |
 | `seal_artifact` | `contents: read` | approved root의 trusted tooling으로 candidate patch를 별도 workspace에 적용하고 immutable artifact를 봉인 |
 | `publish` | `contents: write`, `pull-requests: write` | trusted provenance와 sealed artifact 검증 후 GitHub API publish |
@@ -61,7 +61,7 @@ GitHub REST ref update API는 mutation 요청에 `expected old SHA`를 함께 �
 
 정상 production start는 Issue에 정확한 `SI-승인` label을 붙이는 `issues:labeled` event뿐이다. 수동 `workflow_dispatch`와 protected Environment 승인은 사용하지 않는다. Label event의 `github.actor`에 대해 GitHub repository permission API가 반환한 `write`, `maintain`, `admin`만 허용하며, Issue 본문이나 임의 문자열은 신뢰하지 않는다.
 
-승인 job은 Issue 번호에서 `self-improvement/<issue_number>`를 계산하고, fresh run의 expected HEAD를 비워 둔 채 GitHub ref API로 읽은 exact `main` HEAD를 root base SHA로 freeze한다. Issue별 non-cancelling concurrency와 함께 기존 target branch, 같은 head의 open PR, 두 번째 `SI-승인` labeled event를 각각 bounded `STOPPED(...)`로 처리하므로 overwrite나 relabel 기반 병렬 실행을 만들지 않는다.
+승인 job은 Issue 번호에서 `self-improvement/<issue_number>`를 계산하고, label webhook에 기록된 event-time default-branch `github.sha`를 exact root base SHA로 freeze한다. Rail 시작 직전에 현재 `main` ref가 이 SHA와 다르면 `STOPPED(MAIN_MOVED_SINCE_APPROVAL)`로 종료한다. 승인 label만 Issue별 non-cancelling concurrency를 공유하고 다른 label은 run별 group으로 격리한다. 기존 target branch, 같은 head의 open PR, 두 번째 **trusted** `SI-승인` event를 각각 bounded `STOPPED(...)`로 처리하며, 권한 없는 actor의 label event는 정상 승인 기회를 소모하지 않는다.
 
 Workflow summary에는 승인 Issue, label, actor, event/run identity, frozen SHA, target branch와 authorization decision을 기록한다. 권한 부족이나 collision은 Codex 및 publish job 전에 종료된다.
 
