@@ -10,7 +10,7 @@ Bootstrap은 Rail이 존재하기 전에 외부 신뢰를 최초로 세우는 1�
 
 | 영역 | 권한 | 역할 |
 |---|---|---|
-| `authorize_start` | `contents: read`, `issues: read`, `pull-requests: read` | `issues:labeled`가 event-time permission 증거를 제공하지 않는 설계 한계에서 fail-closed하고 event-time `main` SHA 입력을 보존 |
+| `authorize_start` | `contents: read`, `issues: read`, `pull-requests: read` | event-time `main` SHA의 versioned approver policy로 actor를 검증하고 exact root를 보존 |
 | `implement_or_fix` | `contents: read`, `issues: read` | Codex가 workspace만 수정하고 untrusted patch만 생성. publish credential 없음 |
 | `seal_artifact` | `contents: read` | approved root의 trusted tooling으로 candidate patch를 별도 workspace에 적용하고 immutable artifact를 봉인 |
 | `publish` | `contents: write`, `pull-requests: write` | trusted provenance와 sealed artifact 검증 후 GitHub API publish |
@@ -59,11 +59,11 @@ GitHub REST ref update API는 mutation 요청에 `expected old SHA`를 함께 �
 
 ## Single Human start approval
 
-정상 production start 후보는 Issue에 정확한 `SI-승인` label을 붙이는 `issues:labeled` event뿐이다. 수동 `workflow_dispatch`와 protected Environment 승인은 사용하지 않는다. 그러나 GitHub의 label event payload에는 sender와 event-time default-branch SHA는 있어도 sender의 **event-time repository permission**은 없다. `github.actor`는 actor identity일 뿐 permission snapshot이 아니며, collaborator permission API는 workflow attempt가 실행되는 시점의 live permission을 반환한다. Actions rerun은 같은 event payload를 재사용하면서 다시 job을 실행할 수 있으므로, queued run 또는 rerun의 permission 조회 결과를 원래 label 순간의 신뢰 증거로 사용할 수 없다.
+정상 production start 후보는 Issue에 정확한 `SI-승인` label을 붙이는 `issues:labeled` event뿐이다. 수동 `workflow_dispatch`와 protected Environment 승인은 사용하지 않는다. 승인 신뢰 경계는 GitHub collaborator permission이 아니라 repository의 `.github/trusted-rail-approvers.json`에 version-controlled 된 명시적 allowlist다. 최소 schema는 `{"version": 1, "approvers": ["login"]}`이며, login 비교는 GitHub login의 case-insensitive 특성에 맞춰 수행한다.
 
-승인 job은 Issue 번호에서 `self-improvement/<issue_number>`를 계산하고, label webhook에 기록된 event-time default-branch `github.sha`를 exact root base SHA로 freeze한다. Rail 시작 직전에 현재 `main` ref가 이 SHA와 다르면 `STOPPED(MAIN_MOVED_SINCE_APPROVAL)`로 종료한다. 승인 label만 Issue별 non-cancelling concurrency를 공유하고 다른 label은 run별 group으로 격리한다.
+승인 job은 Issue 번호에서 `self-improvement/<issue_number>`를 계산하고, label webhook에 기록된 event-time default-branch `github.sha`를 exact root base SHA로 freeze한다. 정책은 반드시 Contents API의 `ref=<github.sha>`에서 읽으며 workflow branch의 최신 파일이나 현재 `main`의 파일을 사용하지 않는다. 따라서 queued run과 rerun은 같은 event SHA와 같은 immutable Git object를 다시 읽고, 후행 collaborator permission 변경이나 후행 policy commit은 과거 event의 trusted/untrusted 판정을 바꾸지 않는다. live collaborator permission API는 authorization에 사용하지 않는다.
 
-따라서 현재 GitHub event/context만으로는 `write|maintain|admin` 신뢰 경계를 label 순간에 불변으로 증명할 수 없다. Workflow attempt가 만든 marker 역시 live permission 조회 뒤 생성되므로 원래 event-time 증거가 아니며, 재실행으로 새 marker를 만들 수 있다. 느슨한 추정이나 소급 승격을 피하기 위해 모든 `SI-승인` 시작 후보는 Codex 또는 publish 전에 bounded terminal state인 `STOPPED(DESIGN_LIMITATION)`으로 종료한다. 새로운 Human 승인 단계나 Environment approval은 추가하지 않는다. GitHub가 서명되거나 불변인 event-time permission claim을 제공하기 전에는 이 경로를 다시 authorize하지 않는다.
+actor가 event-time allowlist에 없으면 `STOPPED(UNAUTHORIZED_APPROVER)`로 종료한다. 정책 파일이 해당 SHA에 없거나, JSON/schema가 malformed/invalid이면 `STOPPED(INVALID_APPROVER_POLICY)`로 fail-closed한다. 정책 검증 뒤 Rail 시작 직전에 현재 `main` ref가 승인 SHA와 다르면 `STOPPED(MAIN_MOVED_SINCE_APPROVAL)`로 종료한다. 승인 label만 Issue별 non-cancelling concurrency를 공유하고 다른 label은 run별 group으로 격리한다. 별도의 Human 승인 단계나 Environment approval은 추가하지 않는다.
 
 Workflow summary에는 승인 Issue, label, actor, event/run identity, frozen SHA, target branch와 authorization decision을 기록한다. 권한 부족이나 collision은 Codex 및 publish job 전에 종료된다.
 

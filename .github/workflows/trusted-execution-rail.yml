@@ -29,7 +29,7 @@ jobs:
       target_branch: ${{ steps.authorize.outputs.target_branch }}
     steps:
       - id: authorize
-        name: Fail closed because event-time permission provenance is unavailable
+        name: Authorize from the event-time versioned approver policy
         env:
           GH_READ_TOKEN: ${{ github.token }}
           APPROVAL_LABEL: ${{ github.event.label.name }}
@@ -79,12 +79,39 @@ jobs:
           async function main() {
             if (label !== 'SI-승인') return finish(false, 'STOPPED(INVALID_APPROVAL_LABEL)');
 
-            // The issues:labeled payload records who applied the label, but not that
-            // actor's repository permission at label time. github.actor and the
-            // collaborator permission API are evaluated when an attempt executes;
-            // queued runs and reruns can therefore observe later permission changes.
-            // Do not turn that mutable observation into approval provenance.
-            return finish(false, 'STOPPED(DESIGN_LIMITATION)');
+            // Trust is defined by the policy committed at the event's exact default-branch
+            // SHA. Never read this file from the workflow ref or the current main branch.
+            const base = process.env.EVENT_ROOT_BASE_SHA;
+            if (!/^[0-9a-f]{40}$/.test(base)) {
+              return finish(false, 'STOPPED(INVALID_APPROVER_POLICY)');
+            }
+            const policyPath = '.github/trusted-rail-approvers.json';
+            const policyResponse = await request(`/contents/${policyPath}?ref=${base}`, [200, 404]);
+            if (policyResponse.status === 404) {
+              return finish(false, 'STOPPED(INVALID_APPROVER_POLICY)', base);
+            }
+
+            let policy;
+            try {
+              const file = policyResponse.data;
+              if (file?.type !== 'file' || file.encoding !== 'base64' || typeof file.content !== 'string') {
+                throw new Error('policy response is not a base64 file');
+              }
+              policy = JSON.parse(Buffer.from(file.content.replace(/\s/g, ''), 'base64').toString('utf8'));
+              if (
+                policy === null || Array.isArray(policy) || policy.version !== 1 ||
+                !Array.isArray(policy.approvers) || policy.approvers.length === 0 ||
+                !policy.approvers.every((value) => typeof value === 'string' && /^[A-Za-z0-9-]{1,39}$/.test(value)) ||
+                new Set(policy.approvers.map((value) => value.toLowerCase())).size !== policy.approvers.length
+              ) {
+                throw new Error('policy schema is invalid');
+              }
+            } catch (error) {
+              console.error(`Invalid event-time approver policy: ${error.message}`);
+              return finish(false, 'STOPPED(INVALID_APPROVER_POLICY)', base);
+            }
+            const trusted = policy.approvers.some((value) => value.toLowerCase() === actor.toLowerCase());
+            if (!trusted) return finish(false, 'STOPPED(UNAUTHORIZED_APPROVER)', base);
 
             const encodedRef = encodeURIComponent(`heads/${target}`);
             const branch = await request(`/git/ref/${encodedRef}`, [200, 404]);
@@ -96,8 +123,6 @@ jobs:
 
             // github.sha is the default-branch HEAD recorded on the label webhook event.
             // Immediately before starting IMPLEMENT, fail closed if main has moved since approval.
-            const base = process.env.EVENT_ROOT_BASE_SHA;
-            if (!/^[0-9a-f]{40}$/.test(base)) throw new Error('Approval event supplied an invalid root base SHA');
             const mainRef = await request('/git/ref/heads/main');
             if (mainRef.data.object.sha !== base) {
               return finish(false, 'STOPPED(MAIN_MOVED_SINCE_APPROVAL)', base);
