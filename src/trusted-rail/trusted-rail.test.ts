@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import {
   MAX_FIX_ATTEMPTS,
   MAX_PUBLISH_RECOVERY_ATTEMPTS,
@@ -11,6 +12,19 @@ import { validateSemanticReview } from "./semantic-review.js";
 import { assertArtifactProvenance } from "./publisher.js";
 
 const sha = "a".repeat(40);
+
+test("trusted rail has one label-based human start boundary", () => {
+  const workflow = readFileSync(".github/workflows/trusted-execution-rail.yml", "utf8");
+
+  assert.match(workflow, /issues:\n\s+types: \[labeled\]/);
+  assert.match(workflow, /label !== 'SI-승인'/);
+  assert.match(workflow, /\['write', 'maintain', 'admin'\]/);
+  assert.match(workflow, /\/git\/ref\/heads\/main/);
+  assert.match(workflow, /self-improvement\/\$\{issue\}/);
+  assert.match(workflow, /STOPPED\(DUPLICATE_APPROVAL\)/);
+  assert.match(workflow, /STOPPED\(TARGET_BRANCH_EXISTS\)/);
+  assert.doesNotMatch(workflow, /workflow_dispatch|trusted-rail-approval|environment:/);
+});
 
 test("retry budgets remain bounded", () => {
   assert.equal(MAX_FIX_ATTEMPTS, 2);

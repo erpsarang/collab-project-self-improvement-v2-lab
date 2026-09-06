@@ -1,44 +1,117 @@
 name: Trusted Execution Rail
 
 on:
-  workflow_dispatch:
-    inputs:
-      issue_number:
-        description: "Dogfooding Issue number"
-        required: true
-        type: string
-      base_sha:
-        description: "Exact approved main SHA"
-        required: true
-        type: string
-      target_branch:
-        description: "New self-improvement/<issue> branch"
-        required: true
-        type: string
-      expected_head:
-        description: "Expected existing target HEAD; empty for a fresh branch"
-        required: false
-        default: ""
-        type: string
+  issues:
+    types: [labeled]
 
 permissions: {}
 
+# A second label event for the same Issue waits for the first run. The authorization
+# guard then observes either the prior label event or the branch/PR it created.
 concurrency:
-  group: trusted-rail-${{ inputs.target_branch }}
+  group: trusted-rail-issue-${{ github.event.issue.number }}
   cancel-in-progress: false
 
 jobs:
-  approve:
-    name: Human start approval
+  authorize_start:
+    name: Authorize label approval and freeze inputs
     runs-on: ubuntu-latest
-    environment: trusted-rail-approval
-    permissions: {}
+    permissions:
+      contents: read
+      issues: read
+      pull-requests: read
+    outputs:
+      authorized: ${{ steps.authorize.outputs.authorized }}
+      stop_reason: ${{ steps.authorize.outputs.stop_reason }}
+      issue_number: ${{ steps.authorize.outputs.issue_number }}
+      root_base_sha: ${{ steps.authorize.outputs.root_base_sha }}
+      target_branch: ${{ steps.authorize.outputs.target_branch }}
     steps:
-      - run: echo "Trusted Rail start approved by protected environment boundary."
+      - id: authorize
+        name: Validate trusted start and fresh-run guards
+        env:
+          GH_READ_TOKEN: ${{ github.token }}
+          APPROVAL_LABEL: ${{ github.event.label.name }}
+          APPROVING_ACTOR: ${{ github.actor }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+        run: |
+          node <<'NODE'
+          const fs = require('node:fs');
+          const repo = process.env.GITHUB_REPOSITORY;
+          const issue = Number(process.env.ISSUE_NUMBER);
+          const actor = process.env.APPROVING_ACTOR;
+          const label = process.env.APPROVAL_LABEL;
+          const target = `self-improvement/${issue}`;
+          const headers = {
+            Accept: 'application/vnd.github+json',
+            Authorization: `Bearer ${process.env.GH_READ_TOKEN}`,
+            'X-GitHub-Api-Version': '2022-11-28',
+          };
+          const output = process.env.GITHUB_OUTPUT;
+          const summary = process.env.GITHUB_STEP_SUMMARY;
+
+          async function request(path, allowed = [200]) {
+            const response = await fetch(`https://api.github.com/repos/${repo}${path}`, { headers });
+            if (!allowed.includes(response.status)) {
+              throw new Error(`${path} failed: ${response.status} ${await response.text()}`);
+            }
+            return { status: response.status, data: response.status === 204 || response.status === 404 ? null : await response.json() };
+          }
+          function finish(authorized, reason, base = '') {
+            const values = {
+              authorized: String(authorized), stop_reason: reason, issue_number: String(issue),
+              root_base_sha: base, target_branch: target,
+            };
+            fs.appendFileSync(output, Object.entries(values).map(([key, value]) => `${key}=${value}\n`).join(''));
+            fs.appendFileSync(summary, [
+              '## Trusted start approval provenance', '',
+              `- Approved issue: #${issue}`,
+              `- Approval label: \`${label}\``,
+              `- Approving actor: \`${actor}\``,
+              `- Approval event/run: \`${process.env.GITHUB_EVENT_NAME}/${process.env.GITHUB_RUN_ID}/${process.env.GITHUB_RUN_ATTEMPT}\``,
+              `- Frozen root base SHA: \`${base || '(not frozen)'}\``,
+              `- Target branch: \`${target}\``,
+              `- Start decision: **${authorized ? 'AUTHORIZED' : reason}**`, '',
+            ].join('\n'));
+          }
+          async function main() {
+            if (label !== 'SI-승인') return finish(false, 'STOPPED(INVALID_APPROVAL_LABEL)');
+
+            const permission = await request(`/collaborators/${encodeURIComponent(actor)}/permission`, [200, 404]);
+            if (permission.status === 404 || !['write', 'maintain', 'admin'].includes(permission.data.permission)) {
+              return finish(false, 'STOPPED(UNAUTHORIZED_APPROVER)');
+            }
+
+            // Relabel is never a retry mechanism: more than one matching labeled event is a prior-run trace.
+            let approvalEvents = 0;
+            for (let page = 1; ; page += 1) {
+              const events = (await request(`/issues/${issue}/events?per_page=100&page=${page}`)).data;
+              approvalEvents += events.filter((event) => event.event === 'labeled' && event.label?.name === 'SI-승인').length;
+              if (events.length < 100) break;
+            }
+            if (approvalEvents > 1) return finish(false, 'STOPPED(DUPLICATE_APPROVAL)');
+
+            const encodedRef = encodeURIComponent(`heads/${target}`);
+            const branch = await request(`/git/ref/${encodedRef}`, [200, 404]);
+            if (branch.status === 200) return finish(false, 'STOPPED(TARGET_BRANCH_EXISTS)');
+
+            const [owner] = repo.split('/');
+            const pulls = await request(`/pulls?state=open&head=${encodeURIComponent(`${owner}:${target}`)}&per_page=1`);
+            if (pulls.data.length > 0) return finish(false, 'STOPPED(OPEN_PR_EXISTS)');
+
+            // Freeze main only after authorization and collision checks, immediately before starting IMPLEMENT.
+            const mainRef = await request('/git/ref/heads/main');
+            const base = mainRef.data.object.sha;
+            if (!/^[0-9a-f]{40}$/.test(base)) throw new Error('GitHub returned an invalid main HEAD SHA');
+            finish(true, '', base);
+          }
+          main().catch((error) => { console.error(error); process.exit(1); });
+          NODE
 
   iteration_0:
     name: IMPLEMENT → PUBLISH → VERIFY → REVIEW
-    needs: approve
+    needs: authorize_start
+    if: ${{ needs.authorize_start.outputs.authorized == 'true' }}
     permissions:
       contents: write
       pull-requests: write
@@ -46,18 +119,18 @@ jobs:
     uses: ./.github/workflows/trusted-rail-iteration.yml
     with:
       attempt: "0"
-      issue_number: ${{ inputs.issue_number }}
-      root_base_sha: ${{ inputs.base_sha }}
-      parent_sha: ${{ inputs.base_sha }}
-      target_branch: ${{ inputs.target_branch }}
-      expected_head: ${{ inputs.expected_head }}
+      issue_number: ${{ needs.authorize_start.outputs.issue_number }}
+      root_base_sha: ${{ needs.authorize_start.outputs.root_base_sha }}
+      parent_sha: ${{ needs.authorize_start.outputs.root_base_sha }}
+      target_branch: ${{ needs.authorize_start.outputs.target_branch }}
+      expected_head: ""
     secrets:
       CODEX_API_KEY: ${{ secrets.CODEX_API_KEY }}
 
   iteration_1:
     name: FIX #1 → PUBLISH → VERIFY → REVIEW
-    needs: iteration_0
-    if: ${{ always() && needs.iteration_0.outputs.status == 'FINDING' }}
+    needs: [authorize_start, iteration_0]
+    if: ${{ always() && needs.authorize_start.outputs.authorized == 'true' && needs.iteration_0.outputs.status == 'FINDING' }}
     permissions:
       contents: write
       pull-requests: write
@@ -65,10 +138,10 @@ jobs:
     uses: ./.github/workflows/trusted-rail-iteration.yml
     with:
       attempt: "1"
-      issue_number: ${{ inputs.issue_number }}
-      root_base_sha: ${{ inputs.base_sha }}
+      issue_number: ${{ needs.authorize_start.outputs.issue_number }}
+      root_base_sha: ${{ needs.authorize_start.outputs.root_base_sha }}
       parent_sha: ${{ needs.iteration_0.outputs.published_head }}
-      target_branch: ${{ inputs.target_branch }}
+      target_branch: ${{ needs.authorize_start.outputs.target_branch }}
       expected_head: ${{ needs.iteration_0.outputs.published_head }}
       previous_review_artifact: semantic-review-0
     secrets:
@@ -76,8 +149,8 @@ jobs:
 
   iteration_2:
     name: FIX #2 → PUBLISH → VERIFY → REVIEW
-    needs: iteration_1
-    if: ${{ always() && needs.iteration_1.outputs.status == 'FINDING' }}
+    needs: [authorize_start, iteration_1]
+    if: ${{ always() && needs.authorize_start.outputs.authorized == 'true' && needs.iteration_1.outputs.status == 'FINDING' }}
     permissions:
       contents: write
       pull-requests: write
@@ -85,10 +158,10 @@ jobs:
     uses: ./.github/workflows/trusted-rail-iteration.yml
     with:
       attempt: "2"
-      issue_number: ${{ inputs.issue_number }}
-      root_base_sha: ${{ inputs.base_sha }}
+      issue_number: ${{ needs.authorize_start.outputs.issue_number }}
+      root_base_sha: ${{ needs.authorize_start.outputs.root_base_sha }}
       parent_sha: ${{ needs.iteration_1.outputs.published_head }}
-      target_branch: ${{ inputs.target_branch }}
+      target_branch: ${{ needs.authorize_start.outputs.target_branch }}
       expected_head: ${{ needs.iteration_1.outputs.published_head }}
       previous_review_artifact: semantic-review-1
     secrets:
@@ -97,17 +170,21 @@ jobs:
   terminal_state:
     name: Terminal state
     if: ${{ always() }}
-    needs: [iteration_0, iteration_1, iteration_2]
+    needs: [authorize_start, iteration_0, iteration_1, iteration_2]
     runs-on: ubuntu-latest
     permissions: {}
     env:
+      AUTHORIZED: ${{ needs.authorize_start.outputs.authorized }}
+      AUTH_STOP: ${{ needs.authorize_start.outputs.stop_reason }}
       S0: ${{ needs.iteration_0.outputs.status }}
       S1: ${{ needs.iteration_1.outputs.status }}
       S2: ${{ needs.iteration_2.outputs.status }}
     steps:
       - name: Resolve bounded terminal state
         run: |
-          if [ "$S0" = "PASS" ]; then
+          if [ "$AUTHORIZED" != "true" ]; then
+            state="${AUTH_STOP:-STOPPED(START_AUTHORIZATION_FAILED)}"
+          elif [ "$S0" = "PASS" ]; then
             state="MERGE_READY"
           elif [[ "$S0" == STOPPED* ]] || [ -z "$S0" ]; then
             state="${S0:-STOPPED(RAIL_ITERATION_FAILED)}"
