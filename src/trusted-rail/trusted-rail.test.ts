@@ -18,15 +18,11 @@ test("trusted rail has one label-based human start boundary", () => {
 
   assert.match(workflow, /issues:\n\s+types: \[labeled\]/);
   assert.match(workflow, /label !== 'SI-승인'/);
-  assert.match(workflow, /\['write', 'maintain', 'admin'\]/);
   assert.match(workflow, /EVENT_ROOT_BASE_SHA: \$\{\{ github\.sha \}\}/);
   assert.match(workflow, /mainRef\.data\.object\.sha !== base/);
   assert.match(workflow, /STOPPED\(MAIN_MOVED_SINCE_APPROVAL\)/);
   assert.match(workflow, /self-improvement\/\$\{issue\}/);
-  assert.match(workflow, /STOPPED\(DUPLICATE_APPROVAL\)/);
-  assert.match(workflow, /Record event-time trusted approval for issue/);
-  assert.match(workflow, /step\.name === marker && step\.conclusion === 'success'/);
-  assert.match(workflow, /actions\/workflows\/trusted-execution-rail\.yml\/runs/);
+  assert.match(workflow, /STOPPED\(DESIGN_LIMITATION\)/);
   assert.doesNotMatch(workflow, /isTrustedApprover\(approvalActor\)/);
   assert.doesNotMatch(workflow, /collaborators\/\$\{encodeURIComponent\(approvalActor\)\}/);
   assert.doesNotMatch(workflow, /approvalEvents \+=/);
@@ -35,13 +31,15 @@ test("trusted rail has one label-based human start boundary", () => {
   assert.doesNotMatch(workflow, /workflow_dispatch|trusted-rail-approval|environment:/);
 });
 
-test("historical approval trust comes from event-time Actions provenance", () => {
+test("queued runs and reruns cannot manufacture event-time approval trust", () => {
   const workflow = readFileSync(".github/workflows/trusted-execution-rail.yml", "utf8");
 
-  assert.match(workflow, /Validate approval actor at event time/);
-  assert.match(workflow, /if: \$\{\{ steps\.trust\.outputs\.trusted == 'true' \}\}/);
-  assert.match(workflow, /Never re-evaluate a historical actor's current permission/);
-  assert.match(workflow, /if \(trustedApprovals > 0\).*STOPPED\(DUPLICATE_APPROVAL\)/);
+  assert.match(workflow, /queued runs and reruns can therefore observe later permission changes/);
+  assert.match(workflow, /return finish\(false, 'STOPPED\(DESIGN_LIMITATION\)'\)/);
+  assert.doesNotMatch(workflow, /collaborators\//);
+  assert.doesNotMatch(workflow, /Record event-time trusted approval/);
+  assert.doesNotMatch(workflow, /actions\/runs\/\$\{run\.id\}\/jobs/);
+  assert.doesNotMatch(workflow, /GITHUB_RUN_ATTEMPT.*trusted/);
 });
 
 test("retry budgets remain bounded", () => {

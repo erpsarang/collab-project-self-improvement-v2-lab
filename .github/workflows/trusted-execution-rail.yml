@@ -18,7 +18,6 @@ jobs:
     name: Authorize label approval and freeze inputs
     runs-on: ubuntu-latest
     permissions:
-      actions: read
       contents: read
       issues: read
       pull-requests: read
@@ -29,54 +28,14 @@ jobs:
       root_base_sha: ${{ steps.authorize.outputs.root_base_sha }}
       target_branch: ${{ steps.authorize.outputs.target_branch }}
     steps:
-      - id: trust
-        name: Validate approval actor at event time
-        env:
-          GH_READ_TOKEN: ${{ github.token }}
-          APPROVAL_LABEL: ${{ github.event.label.name }}
-          APPROVING_ACTOR: ${{ github.actor }}
-        run: |
-          node <<'NODE'
-          const fs = require('node:fs');
-          async function main() {
-            let trusted = false;
-            if (process.env.APPROVAL_LABEL === 'SI-승인') {
-              const response = await fetch(
-                `https://api.github.com/repos/${process.env.GITHUB_REPOSITORY}/collaborators/${encodeURIComponent(process.env.APPROVING_ACTOR)}/permission`,
-                { headers: {
-                  Accept: 'application/vnd.github+json',
-                  Authorization: `Bearer ${process.env.GH_READ_TOKEN}`,
-                  'X-GitHub-Api-Version': '2022-11-28',
-                } },
-              );
-              if (![200, 404].includes(response.status)) {
-                throw new Error(`collaborator permission failed: ${response.status} ${await response.text()}`);
-              }
-              if (response.status === 200) {
-                const permission = (await response.json()).permission;
-                trusted = ['write', 'maintain', 'admin'].includes(permission);
-              }
-            }
-            fs.appendFileSync(process.env.GITHUB_OUTPUT, `trusted=${trusted}\n`);
-          }
-          main().catch((error) => { console.error(error); process.exit(1); });
-          NODE
-
-      # The successful conclusion of this step is immutable Actions provenance that
-      # this particular label event crossed the trust boundary at event time.
-      - name: Record event-time trusted approval for issue ${{ github.event.issue.number }}
-        if: ${{ steps.trust.outputs.trusted == 'true' }}
-        run: echo "Trusted approval recorded for run $GITHUB_RUN_ID"
-
       - id: authorize
-        name: Validate trusted start and fresh-run guards
+        name: Fail closed because event-time permission provenance is unavailable
         env:
           GH_READ_TOKEN: ${{ github.token }}
           APPROVAL_LABEL: ${{ github.event.label.name }}
           APPROVING_ACTOR: ${{ github.actor }}
           ISSUE_NUMBER: ${{ github.event.issue.number }}
           EVENT_ROOT_BASE_SHA: ${{ github.sha }}
-          EVENT_TRUSTED: ${{ steps.trust.outputs.trusted }}
         run: |
           node <<'NODE'
           const fs = require('node:fs');
@@ -120,26 +79,12 @@ jobs:
           async function main() {
             if (label !== 'SI-승인') return finish(false, 'STOPPED(INVALID_APPROVAL_LABEL)');
 
-            if (process.env.EVENT_TRUSTED !== 'true') {
-              return finish(false, 'STOPPED(UNAUTHORIZED_APPROVER)');
-            }
-
-            // A prior approval is trusted only when its run contains the successful
-            // event-time marker step. Never re-evaluate a historical actor's current permission.
-            const marker = `Record event-time trusted approval for issue ${issue}`;
-            let trustedApprovals = 0;
-            for (let page = 1; ; page += 1) {
-              const runs = (await request(`/actions/workflows/trusted-execution-rail.yml/runs?event=issues&status=completed&per_page=100&page=${page}`)).data.workflow_runs;
-              for (const run of runs) {
-                if (run.id === Number(process.env.GITHUB_RUN_ID) || run.display_title !== `Trusted Rail approval for issue #${issue}`) continue;
-                const jobs = (await request(`/actions/runs/${run.id}/jobs?filter=all&per_page=100`)).data.jobs;
-                if (jobs.some((job) => job.steps?.some((step) => step.name === marker && step.conclusion === 'success'))) {
-                  trustedApprovals += 1;
-                }
-              }
-              if (runs.length < 100) break;
-            }
-            if (trustedApprovals > 0) return finish(false, 'STOPPED(DUPLICATE_APPROVAL)');
+            // The issues:labeled payload records who applied the label, but not that
+            // actor's repository permission at label time. github.actor and the
+            // collaborator permission API are evaluated when an attempt executes;
+            // queued runs and reruns can therefore observe later permission changes.
+            // Do not turn that mutable observation into approval provenance.
+            return finish(false, 'STOPPED(DESIGN_LIMITATION)');
 
             const encodedRef = encodeURIComponent(`heads/${target}`);
             const branch = await request(`/git/ref/${encodedRef}`, [200, 404]);
