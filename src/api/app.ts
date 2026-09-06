@@ -216,9 +216,14 @@ async function handleRequest(
         sendJson(response, 400, { error: "Task status must be TODO or DONE" });
         return;
       }
+      const title = url.searchParams.get("title");
+      if (title !== null && title.trim() === "") {
+        sendJson(response, 400, { error: "Task title filter must not be blank" });
+        return;
+      }
 
       try {
-        sendJson(response, 200, await taskService.listByProject(projectId, status ?? undefined));
+        sendJson(response, 200, await taskService.listByProject(projectId, status ?? undefined, title ?? undefined));
       } catch (error) {
         if (error instanceof ProjectNotFoundError) {
           sendJson(response, 404, { error: "Project not found" });

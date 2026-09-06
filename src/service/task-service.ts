@@ -22,13 +22,17 @@ export class TaskService {
     return task;
   }
 
-  async listByProject(projectId: string, status?: TaskStatus): Promise<Task[]> {
+  async listByProject(projectId: string, status?: TaskStatus, title?: string): Promise<Task[]> {
     const project = await this.projectRepository.findById(projectId);
     if (!project) {
       throw new ProjectNotFoundError(projectId);
     }
 
     const tasks = await this.taskRepository.findByProjectId(projectId);
-    return status === undefined ? tasks : tasks.filter((task) => task.status === status);
+    const normalizedTitle = title?.toLowerCase();
+    return tasks.filter((task) =>
+      (status === undefined || task.status === status)
+      && (normalizedTitle === undefined || task.title.toLowerCase().includes(normalizedTitle)),
+    );
   }
 }
