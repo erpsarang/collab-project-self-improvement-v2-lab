@@ -10,7 +10,7 @@ Bootstrap은 Rail이 존재하기 전에 외부 신뢰를 최초로 세우는 1�
 
 | 영역 | 권한 | 역할 |
 |---|---|---|
-| `approve` | 없음 | `trusted-rail-approval` environment의 Human 시작 승인 |
+| `authorize_start` | `contents: read`, `issues: read`, `pull-requests: read` | event-time `main` SHA의 versioned approver policy로 actor를 검증하고 exact root를 보존 |
 | `implement_or_fix` | `contents: read`, `issues: read` | Codex가 workspace만 수정하고 untrusted patch만 생성. publish credential 없음 |
 | `seal_artifact` | `contents: read` | approved root의 trusted tooling으로 candidate patch를 별도 workspace에 적용하고 immutable artifact를 봉인 |
 | `publish` | `contents: write`, `pull-requests: write` | trusted provenance와 sealed artifact 검증 후 GitHub API publish |
@@ -20,10 +20,9 @@ Bootstrap은 Rail이 존재하기 전에 외부 신뢰를 최초로 세우는 1�
 
 ## Required one-time configuration
 
-1. GitHub Environment `trusted-rail-approval`을 만들고 required reviewer를 지정한다.
-2. Repository Actions secret `CODEX_API_KEY`를 등록한다.
-3. Workflow `GITHUB_TOKEN`이 `contents: write`, `pull-requests: write`를 사용할 수 있도록 repository Actions 설정을 허용한다.
-4. `main`은 direct/force update를 허용하지 않고 최종 Merge를 Human 경계로 유지한다.
+1. Repository Actions secret `CODEX_API_KEY`를 등록한다.
+2. Workflow `GITHUB_TOKEN`이 `contents: write`, `pull-requests: write`를 사용할 수 있도록 repository Actions 설정을 허용한다.
+3. `main`은 direct/force update를 허용하지 않고 최종 Merge를 Human 경계로 유지한다.
 
 `CODEX_API_KEY`는 Codex 실행 job에만 전달한다. publish job은 OpenAI key를 받지 않고 job-scoped `GITHUB_TOKEN`만 사용한다. 반대로 Codex job에는 publish token을 전달하지 않는다.
 
@@ -58,6 +57,16 @@ GitHub REST ref update API는 mutation 요청에 `expected old SHA`를 함께 �
 
 외부 writer와의 마지막 순간 race 자체는 알려진 trust limitation으로 남는다.
 
+## Single Human start approval
+
+정상 production start 후보는 Issue에 정확한 `SI-승인` label을 붙이는 `issues:labeled` event뿐이다. 수동 `workflow_dispatch`와 protected Environment 승인은 사용하지 않는다. 승인 신뢰 경계는 GitHub collaborator permission이 아니라 repository의 `.github/trusted-rail-approvers.json`에 version-controlled 된 명시적 allowlist다. 최소 schema는 `{"version": 1, "approvers": ["login"]}`이며, login 비교는 GitHub login의 case-insensitive 특성에 맞춰 수행한다.
+
+승인 job은 Issue 번호에서 `self-improvement/<issue_number>`를 계산하고, label webhook에 기록된 event-time default-branch `github.sha`를 exact root base SHA로 freeze한다. 정책은 반드시 Contents API의 `ref=<github.sha>`에서 읽으며 workflow branch의 최신 파일이나 현재 `main`의 파일을 사용하지 않는다. 따라서 queued run과 rerun은 같은 event SHA와 같은 immutable Git object를 다시 읽고, 후행 collaborator permission 변경이나 후행 policy commit은 과거 event의 trusted/untrusted 판정을 바꾸지 않는다. live collaborator permission API는 authorization에 사용하지 않는다.
+
+actor가 event-time allowlist에 없으면 `STOPPED(UNAUTHORIZED_APPROVER)`로 종료한다. 정책 파일이 해당 SHA에 없거나, JSON/schema가 malformed/invalid이면 `STOPPED(INVALID_APPROVER_POLICY)`로 fail-closed한다. 정책 검증 뒤 Rail 시작 직전에 현재 `main` ref가 승인 SHA와 다르면 `STOPPED(MAIN_MOVED_SINCE_APPROVAL)`로 종료한다. 승인 label만 Issue별 non-cancelling concurrency를 공유하고 다른 label은 run별 group으로 격리한다. 별도의 Human 승인 단계나 Environment approval은 추가하지 않는다.
+
+Workflow summary에는 승인 Issue, label, actor, event/run identity, frozen SHA, target branch와 authorization decision을 기록한다. 권한 부족이나 collision은 Codex 및 publish job 전에 종료된다.
+
 ## Semantic Review invariant
 
 Semantic Review 결과는 다음 양방향 규칙을 만족해야 한다.
@@ -76,4 +85,4 @@ Semantic Review finding이 있으면 최대 두 번만 FIX → SEAL → PUBLISH 
 
 ## Success invariant
 
-초기 environment approval 이후 최종 `MERGE_READY` 또는 `STOPPED(reason)`에 도달할 때까지 정상 진행을 위해 Human 동작을 요구하지 않는다. 최종 PR Merge만 Human이 수행한다.
+Human이 `SI-승인` label을 한 번 붙인 뒤 최종 `MERGE_READY` 또는 `STOPPED(reason)`에 도달할 때까지 정상 진행을 위해 다른 Human 동작을 요구하지 않는다. 최종 PR Merge만 Human이 수행한다.
