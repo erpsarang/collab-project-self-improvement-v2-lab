@@ -119,14 +119,15 @@ async function handleRequest(
   projectService: ProjectService,
   taskService: TaskService,
 ): Promise<void> {
-  let pathname: string;
+  let url: URL;
 
   try {
-    pathname = new URL(request.url ?? "/", "http://localhost").pathname;
+    url = new URL(request.url ?? "/", "http://localhost");
   } catch {
     sendJson(response, 400, { error: "Bad Request" });
     return;
   }
+  const pathname = url.pathname;
 
   if (request.method === "GET" && pathname === "/health") {
     sendJson(response, 200, getHealthStatus());
@@ -210,8 +211,14 @@ async function handleRequest(
     }
 
     if (request.method === "GET") {
+      const status = url.searchParams.get("status");
+      if (status !== null && status !== "TODO" && status !== "DONE") {
+        sendJson(response, 400, { error: "Task status must be TODO or DONE" });
+        return;
+      }
+
       try {
-        sendJson(response, 200, await taskService.listByProject(projectId));
+        sendJson(response, 200, await taskService.listByProject(projectId, status ?? undefined));
       } catch (error) {
         if (error instanceof ProjectNotFoundError) {
           sendJson(response, 404, { error: "Project not found" });
