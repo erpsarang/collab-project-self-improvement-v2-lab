@@ -24,11 +24,24 @@ test("trusted rail has one label-based human start boundary", () => {
   assert.match(workflow, /STOPPED\(MAIN_MOVED_SINCE_APPROVAL\)/);
   assert.match(workflow, /self-improvement\/\$\{issue\}/);
   assert.match(workflow, /STOPPED\(DUPLICATE_APPROVAL\)/);
-  assert.match(workflow, /if \(await isTrustedApprover\(approvalActor\)\) trustedApprovals \+= 1/);
+  assert.match(workflow, /Record event-time trusted approval for issue/);
+  assert.match(workflow, /step\.name === marker && step\.conclusion === 'success'/);
+  assert.match(workflow, /actions\/workflows\/trusted-execution-rail\.yml\/runs/);
+  assert.doesNotMatch(workflow, /isTrustedApprover\(approvalActor\)/);
+  assert.doesNotMatch(workflow, /collaborators\/\$\{encodeURIComponent\(approvalActor\)\}/);
   assert.doesNotMatch(workflow, /approvalEvents \+=/);
   assert.match(workflow, /STOPPED\(TARGET_BRANCH_EXISTS\)/);
   assert.match(workflow, /trusted-rail-nonapproval-\{0\}.*github\.run_id/);
   assert.doesNotMatch(workflow, /workflow_dispatch|trusted-rail-approval|environment:/);
+});
+
+test("historical approval trust comes from event-time Actions provenance", () => {
+  const workflow = readFileSync(".github/workflows/trusted-execution-rail.yml", "utf8");
+
+  assert.match(workflow, /Validate approval actor at event time/);
+  assert.match(workflow, /if: \$\{\{ steps\.trust\.outputs\.trusted == 'true' \}\}/);
+  assert.match(workflow, /Never re-evaluate a historical actor's current permission/);
+  assert.match(workflow, /if \(trustedApprovals > 0\).*STOPPED\(DUPLICATE_APPROVAL\)/);
 });
 
 test("retry budgets remain bounded", () => {
