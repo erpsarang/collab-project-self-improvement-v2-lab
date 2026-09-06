@@ -91,7 +91,7 @@ test("GET /projects/:projectId/tasks returns only that project's tasks", async (
 });
 
 for (const storage of ["memory", "sqlite"] as const) {
-  test(`GET /projects/:projectId/tasks supports status filters (${storage})`, async () => {
+  test(`GET /projects/:projectId/tasks supports status and title filters (${storage})`, async () => {
     let projects: ProjectRepository;
     let tasks: TaskRepository;
     if (storage === "sqlite") {
@@ -123,6 +123,15 @@ for (const storage of ["memory", "sqlite"] as const) {
       ["", [todo, done]],
       ["?status=TODO", [todo]],
       ["?status=DONE", [done]],
+      ["?title=TaSk", [todo, done]],
+      ["?title=EnDiNg", [todo]],
+      ["?title=COMPLETED", [done]],
+      ["?title=absent", []],
+      ["?title=%25", []],
+      ["?status=TODO&title=TaSk", [todo]],
+      ["?status=DONE&title=TaSk", [done]],
+      ["?status=TODO&title=completed", []],
+      ["?status=DONE&title=pending", []],
     ] as const) {
       const response = await fetch(`${baseUrl}/projects/p1/tasks${query}`);
       assert.equal(response.status, 200);
@@ -142,6 +151,13 @@ for (const storage of ["memory", "sqlite"] as const) {
       assert.equal(response.status, 400);
       assert.match(response.headers.get("content-type") ?? "", /application\/json/);
       assert.deepEqual(await response.json(), { error: "Task status must be TODO or DONE" });
+    }
+
+    for (const title of ["", " ", "\t\n", " \t \r\n "]) {
+      const response = await fetch(`${baseUrl}/projects/p1/tasks?title=${encodeURIComponent(title)}`);
+      assert.equal(response.status, 400);
+      assert.match(response.headers.get("content-type") ?? "", /application\/json/);
+      assert.deepEqual(await response.json(), { error: "Task title filter must not be blank" });
     }
   });
 }
