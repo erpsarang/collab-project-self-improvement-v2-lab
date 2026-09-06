@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { afterEach, test } from "node:test";
 
 import { Project } from "../domain/project.js";
+import { Task } from "../domain/task.js";
 import { InMemoryProjectRepository, type ProjectRepository } from "../repository/project-repository.js";
 import { SQLiteProjectRepository } from "../repository/sqlite-project-repository.js";
 import { SQLiteTaskRepository } from "../repository/sqlite-task-repository.js";
@@ -88,6 +89,62 @@ test("GET /projects/:projectId/tasks returns only that project's tasks", async (
   assert.equal(listed[0]?.projectId, "p1");
   assert.equal(listed[0]?.title, "P1 task");
 });
+
+for (const storage of ["memory", "sqlite"] as const) {
+  test(`GET /projects/:projectId/tasks supports status filters (${storage})`, async () => {
+    let projects: ProjectRepository;
+    let tasks: TaskRepository;
+    if (storage === "sqlite") {
+      const directory = mkdtempSync(join(tmpdir(), "tasks-filter-sqlite-"));
+      temporaryDirectories.push(directory);
+      const databasePath = join(directory, "projects.sqlite");
+      projects = new SQLiteProjectRepository(databasePath);
+      tasks = new SQLiteTaskRepository(databasePath);
+    } else {
+      projects = new InMemoryProjectRepository();
+      tasks = new InMemoryTaskRepository();
+    }
+    await projects.save(new Project("p1", "Project 1"));
+    await projects.save(new Project("p2", "Project 2"));
+    await projects.save(new Project("empty", "Empty project"));
+    const todo = new Task("t1", "p1", "Pending task", "TODO");
+    const done = new Task("t2", "p1", "Completed task", "DONE");
+    for (const task of [
+      todo,
+      done,
+      new Task("t3", "p2", "Other pending task", "TODO"),
+      new Task("t4", "p2", "Other completed task", "DONE"),
+    ]) {
+      await tasks.save(task);
+    }
+    const baseUrl = await startServer(projects, tasks);
+
+    for (const [query, expected] of [
+      ["", [todo, done]],
+      ["?status=TODO", [todo]],
+      ["?status=DONE", [done]],
+    ] as const) {
+      const response = await fetch(`${baseUrl}/projects/p1/tasks${query}`);
+      assert.equal(response.status, 200);
+      assert.deepEqual(await response.json(), expected.map((task) => ({ ...task })));
+
+      const emptyResponse = await fetch(`${baseUrl}/projects/empty/tasks${query}`);
+      assert.equal(emptyResponse.status, 200);
+      assert.deepEqual(await emptyResponse.json(), []);
+
+      const missingResponse = await fetch(`${baseUrl}/projects/missing/tasks${query}`);
+      assert.equal(missingResponse.status, 404);
+      assert.deepEqual(await missingResponse.json(), { error: "Project not found" });
+    }
+
+    for (const status of ["INVALID", "todo", "done", "", " TODO "]) {
+      const response = await fetch(`${baseUrl}/projects/p1/tasks?status=${encodeURIComponent(status)}`);
+      assert.equal(response.status, 400);
+      assert.match(response.headers.get("content-type") ?? "", /application\/json/);
+      assert.deepEqual(await response.json(), { error: "Task status must be TODO or DONE" });
+    }
+  });
+}
 
 test("POST /projects/:projectId/tasks rejects a missing project", async () => {
   const baseUrl = await startServer(new InMemoryProjectRepository(), new InMemoryTaskRepository());

@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 
-import { Task } from "../domain/task.js";
+import { Task, type TaskStatus } from "../domain/task.js";
 import type { ProjectRepository } from "../repository/project-repository.js";
 import type { TaskRepository } from "../repository/task-repository.js";
 import { ProjectNotFoundError } from "./project-service.js";
@@ -22,12 +22,13 @@ export class TaskService {
     return task;
   }
 
-  async listByProject(projectId: string): Promise<Task[]> {
+  async listByProject(projectId: string, status?: TaskStatus): Promise<Task[]> {
     const project = await this.projectRepository.findById(projectId);
     if (!project) {
       throw new ProjectNotFoundError(projectId);
     }
 
-    return this.taskRepository.findByProjectId(projectId);
+    const tasks = await this.taskRepository.findByProjectId(projectId);
+    return status === undefined ? tasks : tasks.filter((task) => task.status === status);
   }
 }
