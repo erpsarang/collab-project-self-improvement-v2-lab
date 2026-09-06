@@ -91,7 +91,7 @@ test("GET /projects/:projectId/tasks returns only that project's tasks", async (
 });
 
 for (const storage of ["memory", "sqlite"] as const) {
-  test(`GET /projects/:projectId/tasks supports status and title filters (${storage})`, async () => {
+  test(`GET /projects/:projectId/tasks supports status, title and limit filters (${storage})`, async () => {
     let projects: ProjectRepository;
     let tasks: TaskRepository;
     if (storage === "sqlite") {
@@ -132,6 +132,13 @@ for (const storage of ["memory", "sqlite"] as const) {
       ["?status=DONE&title=TaSk", [done]],
       ["?status=TODO&title=completed", []],
       ["?status=DONE&title=pending", []],
+      ["?limit=1", [todo]],
+      ["?limit=2", [todo, done]],
+      ["?limit=100", [todo, done]],
+      ["?status=DONE&limit=1", [done]],
+      ["?title=COMPLETED&limit=1", [done]],
+      ["?status=DONE&title=TaSk&limit=1", [done]],
+      ["?status=TODO&title=completed&limit=1", []],
     ] as const) {
       const response = await fetch(`${baseUrl}/projects/p1/tasks${query}`);
       assert.equal(response.status, 200);
@@ -151,6 +158,12 @@ for (const storage of ["memory", "sqlite"] as const) {
       assert.equal(response.status, 400);
       assert.match(response.headers.get("content-type") ?? "", /application\/json/);
       assert.deepEqual(await response.json(), { error: "Task status must be TODO or DONE" });
+    }
+
+    for (const limit of ["0", "-1", "101", "1.5", "1.0", "abc", "1abc", "", " ", "\t\n", " 1 ", "1e2", "0x10", "Infinity"]) {
+      const response = await fetch(`${baseUrl}/projects/p1/tasks?limit=${encodeURIComponent(limit)}`);
+      assert.equal(response.status, 400, `limit=${JSON.stringify(limit)}`);
+      assert.deepEqual(await response.json(), { error: "Task limit must be an integer between 1 and 100" });
     }
 
     for (const title of ["", " ", "\t\n", " \t \r\n "]) {
@@ -222,4 +235,30 @@ test("SQLite-backed tasks remain available after restart", async () => {
 
   assert.equal(listResponse.status, 200);
   assert.deepEqual(await listResponse.json(), [created]);
+});
+
+test("GET /projects/:projectId/tasks limits matching results and leaves omitted limit uncapped", async () => {
+  const projects = new InMemoryProjectRepository();
+  const tasks = new InMemoryTaskRepository();
+  await projects.save(new Project("p1", "Project 1"));
+  await tasks.save(new Task("excluded-status", "p1", "Review completed", "DONE"));
+  await tasks.save(new Task("excluded-title", "p1", "Unrelated", "TODO"));
+  const matching = Array.from({ length: 101 }, (_, index) =>
+    new Task(`t${index}`, "p1", `Review ${index}`, "TODO"),
+  );
+  for (const task of matching) {
+    await tasks.save(task);
+  }
+  const baseUrl = await startServer(projects, tasks);
+
+  for (const [query, expected] of [
+    ["", matching],
+    ["&limit=1", matching.slice(0, 1)],
+    ["&limit=5", matching.slice(0, 5)],
+    ["&limit=100", matching.slice(0, 100)],
+  ] as const) {
+    const response = await fetch(`${baseUrl}/projects/p1/tasks?status=TODO&title=review${query}`);
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), expected.map((task) => ({ ...task })));
+  }
 });

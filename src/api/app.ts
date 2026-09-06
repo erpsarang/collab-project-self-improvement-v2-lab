@@ -221,9 +221,15 @@ async function handleRequest(
         sendJson(response, 400, { error: "Task title filter must not be blank" });
         return;
       }
+      const rawLimit = url.searchParams.get("limit");
+      const limit = rawLimit === null ? undefined : Number(rawLimit);
+      if (limit !== undefined && (!/^[0-9]+$/.test(rawLimit ?? "") || !Number.isInteger(limit) || limit < 1 || limit > 100)) {
+        sendJson(response, 400, { error: "Task limit must be an integer between 1 and 100" });
+        return;
+      }
 
       try {
-        sendJson(response, 200, await taskService.listByProject(projectId, status ?? undefined, title ?? undefined));
+        sendJson(response, 200, await taskService.listByProject(projectId, status ?? undefined, title ?? undefined, limit));
       } catch (error) {
         if (error instanceof ProjectNotFoundError) {
           sendJson(response, 404, { error: "Project not found" });

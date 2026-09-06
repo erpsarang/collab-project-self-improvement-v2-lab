@@ -22,7 +22,7 @@ export class TaskService {
     return task;
   }
 
-  async listByProject(projectId: string, status?: TaskStatus, title?: string): Promise<Task[]> {
+  async listByProject(projectId: string, status?: TaskStatus, title?: string, limit?: number): Promise<Task[]> {
     const project = await this.projectRepository.findById(projectId);
     if (!project) {
       throw new ProjectNotFoundError(projectId);
@@ -30,9 +30,10 @@ export class TaskService {
 
     const tasks = await this.taskRepository.findByProjectId(projectId);
     const normalizedTitle = title?.toLowerCase();
-    return tasks.filter((task) =>
+    const filteredTasks = tasks.filter((task) =>
       (status === undefined || task.status === status)
       && (normalizedTitle === undefined || task.title.toLowerCase().includes(normalizedTitle)),
     );
+    return filteredTasks.slice(0, limit);
   }
 }
